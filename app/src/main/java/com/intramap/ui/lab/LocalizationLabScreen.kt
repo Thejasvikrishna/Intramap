@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,16 +37,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.intramap.data.model.Building
 import com.intramap.localization.lab.LocalizationLabEngine
 import com.intramap.vision.CameraLandmarkObservation
 import kotlin.math.max
 import kotlin.math.min
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,7 +100,13 @@ fun LocalizationLabScreen(
     var selectedLandmarkId by remember(building) {
         mutableStateOf(start.nodeId)
     }
+    var landmarkMenuExpanded by remember(building) {
+        mutableStateOf(false)
+    }
 
+    var selectedTransitionNodeId by remember(building) {
+        mutableStateOf<String?>(null)
+    }
     var stepLengthM by remember {
         mutableStateOf(0.7f)
     }
@@ -193,8 +198,22 @@ fun LocalizationLabScreen(
 
     val landmarks = remember(building) {
         building.nodes.filter {
-            it.type in setOf("DOOR", "ROOM", "STAIRS", "ELEVATOR")
+            it.type != "JUNCTION"
         }
+    }
+
+    val connectors = remember(building) {
+        building.nodes.filter {
+            it.type in setOf("STAIRS", "ELEVATOR")
+        }
+    }
+
+    val selectedLandmark = building.nodes.firstOrNull {
+        it.nodeId == selectedLandmarkId
+    }
+
+    val selectedTransition = connectors.firstOrNull {
+        it.nodeId == selectedTransitionNodeId
     }
 
     val currentFloor = remember(estimate, building) {
@@ -273,14 +292,34 @@ fun LocalizationLabScreen(
                 )
 
                 Text(
-                    text = "Distance since correction: %.1f m".format(
+                    text = "Motion drift accumulator: %.1f m".format(
                         estimate.distanceSinceCorrectionM
                     ),
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
         }
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                LabLiveMotionControls(
+                    onStep = { lengthM, headingDeg ->
+                        val update = engine.predict(
+                            stepLengthM = lengthM,
+                            mapHeadingDeg = headingDeg
+                        )
 
+                        revision++
+                        status = update.message
+                    }
+                )
+            }
+        }
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -358,11 +397,61 @@ fun LocalizationLabScreen(
 
                 Text(
                     text = "Selected landmark: " +
-                            (building.nodes.firstOrNull {
-                                it.nodeId == selectedLandmarkId
-                            }?.name ?: "None"),
+                            (selectedLandmark?.let {
+                                "${it.name} — ${it.floorId}"
+                            } ?: "None"),
                     style = MaterialTheme.typography.bodyMedium
                 )
+
+                Box {
+                    OutlinedButton(
+                        enabled = landmarks.isNotEmpty(),
+                        onClick = {
+                            landmarkMenuExpanded = true
+                        }
+                    ) {
+                        Text("Choose landmark")
+                    }
+
+                    DropdownMenu(
+                        expanded = landmarkMenuExpanded,
+                        onDismissRequest = {
+                            landmarkMenuExpanded = false
+                        },
+                        modifier = Modifier.height(280.dp)
+                    ) {
+                        landmarks.forEach { node ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text("${node.name} — ${node.floorId}")
+                                },
+                                onClick = {
+                                    selectedLandmarkId = node.nodeId
+                                    landmarkMenuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    enabled = selectedLandmark != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        selectedLandmark?.let { node ->
+                            engine.reset(node.nodeId)
+                            selectedTransitionNodeId = null
+                            revision++
+
+                            status =
+                                "Manual Lab reset: ${node.name} — ${node.floorId}. " +
+                                        "This is a chosen starting position, " +
+                                        "not a camera-derived correction."
+                        }
+                    }
+                ) {
+                    Text("Reset Lab at selected landmark")
+                }
 
                 Text(
                     text = "Simulated visual quality: %.2f".format(
@@ -427,30 +516,75 @@ fun LocalizationLabScreen(
                     style = MaterialTheme.typography.bodySmall
                 )
 
-                landmarks
-                    .filter {
-                        it.type in setOf("STAIRS", "ELEVATOR")
-                    }
-                    .forEach { connector ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                Text(
+                    text = "Current floor: ${estimate.floorId}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Text(
+                    text = "Selected target: " +
+                            (selectedTransition?.let {
+                                "${it.name} — ${it.floorId}"
+                            } ?: "None"),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                val targetConnectors = connectors.filter {
+                    it.floorId != estimate.floorId
+                }
+
+                if (targetConnectors.isEmpty()) {
+                    Text("No connectors on another floor are configured.")
+                }
+
+                targetConnectors.forEach { connector ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${connector.name} — ${connector.floorId}",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+
+                        OutlinedButton(
+                            onClick = {
+                                selectedTransitionNodeId = connector.nodeId
+                            }
                         ) {
                             Text(
-                                text = "${connector.name} — ${connector.floorId}",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-
-                            OutlinedButton(
-                                onClick = {
-                                    selectedLandmarkId = connector.nodeId
+                                if (selectedTransitionNodeId == connector.nodeId) {
+                                    "Selected"
+                                } else {
+                                    "Select"
                                 }
-                            ) {
-                                Text("Select")
-                            }
+                            )
                         }
                     }
+                }
+
+                Button(
+                    enabled = selectedTransition != null &&
+                            selectedTransition.floorId != estimate.floorId,
+                    onClick = {
+                        selectedTransitionNodeId?.let { targetNodeId ->
+                            val update = engine.confirmFloorTransition(
+                                targetNodeId = targetNodeId
+                            )
+
+                            revision++
+                            status = update.message
+
+                            if (update.accepted) {
+                                selectedTransitionNodeId = null
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Confirm floor transition")
+                }
 
                 Button(
                     onClick = {
@@ -519,8 +653,7 @@ fun LocalizationLabScreen(
                                 (x.toFloat() * scale)
 
                             fun toCanvasY(y: Double): Float =
-                                usableHeight - (y.toFloat() * scale)
-
+                                y.toFloat() * scale
                             building.edges.forEach { edge ->
                                 val a = building.nodes.firstOrNull {
                                     it.nodeId == edge.sourceNodeId

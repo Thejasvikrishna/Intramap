@@ -108,26 +108,57 @@ class LocalizationLabEngine(
             "Call reset before requesting an estimate."
         }
 
-        val meanX = cloud.sumOf { it.x * it.weight }
-        val meanY = cloud.sumOf { it.y * it.weight }
+        val totalWeight = cloud.sumOf { it.weight }
 
-        val variance = cloud.sumOf {
-            it.weight * (
-                    (it.x - meanX).pow(2) +
-                            (it.y - meanY).pow(2)
+        check(totalWeight.isFinite() && totalWeight > 0.0) {
+            "Particle weights are invalid."
+        }
+
+        val floorId = cloud.first().floorId
+
+        check(cloud.all { it.floorId == floorId }) {
+            "The Lab engine expects particles on one floor."
+        }
+
+        val meanX =
+            cloud.sumOf { it.x * it.weight } / totalWeight
+
+        val meanY =
+            cloud.sumOf { it.y * it.weight } / totalWeight
+
+        val variance = cloud.sumOf { particle ->
+            val normalizedWeight = particle.weight / totalWeight
+
+            normalizedWeight * (
+                    (particle.x - meanX).pow(2) +
+                            (particle.y - meanY).pow(2)
                     )
         }
 
-        val representative = cloud.maxBy { it.weight }
+        val squaredWeightSum = cloud.sumOf { particle ->
+            val normalizedWeight = particle.weight / totalWeight
+            normalizedWeight * normalizedWeight
+        }
+
+        // A mean can lie outside the corridor model at a junction.
+        // In that case, choose a valid particle nearest to the mean.
+        val meanIsValid = validPoint(meanX, meanY, floorId)
+
+        val representative = if (meanIsValid) {
+            null
+        } else {
+            cloud.minByOrNull { particle ->
+                (particle.x - meanX).pow(2) +
+                        (particle.y - meanY).pow(2)
+            }
+        }
 
         return LabEstimate(
-            x = representative.x,
-            y = representative.y,
-            floorId = representative.floorId,
+            x = representative?.x ?: meanX,
+            y = representative?.y ?: meanY,
+            floorId = floorId,
             spreadM = sqrt(variance.coerceAtLeast(0.0)),
-            effectiveSampleSize = 1.0 / cloud.sumOf {
-                it.weight * it.weight
-            },
+            effectiveSampleSize = 1.0 / squaredWeightSum,
             distanceSinceCorrectionM = distanceSinceCorrectionM
         )
     }
