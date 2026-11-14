@@ -2,6 +2,8 @@ package com.intramap.ui.vision
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.SystemClock
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -19,14 +21,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.intramap.data.model.Building
-import com.intramap.vision.matchLandmarkText
-import android.os.SystemClock
 import com.intramap.vision.CameraLandmarkObservation
+import com.intramap.vision.matchLandmarkText
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,389 +37,196 @@ fun LandmarkScannerScreen(
     building: Building,
     onBack: () -> Unit,
     onUseObservation: ((CameraLandmarkObservation) -> Unit)? = null
-)  {
+) {
+    BackHandler(onBack = onBack)
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-
+    val owner = LocalLifecycleOwner.current
     if (building.floors.isEmpty()) {
-        Column(Modifier.padding(16.dp)) {
-            Text("No floors are configured for this building.")
-            TextButton(onClick = onBack) {
-                Text("Back")
-            }
+        Column(Modifier.safeDrawingPadding().padding(16.dp)) {
+            Text("No floors configured.")
+            TextButton(onClick = onBack) { Text("Back") }
         }
         return
     }
-    var lastMatchedCaptureMs by remember {
-        mutableLongStateOf(-1L)
-    }
     var permissionGranted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
-        )
+        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
-
-    var floorId by remember(building) {
-        mutableStateOf(building.floors.first().floorId)
-    }
-
+    var floorId by remember(building) { mutableStateOf(building.floors.first().floorId) }
     var busy by remember { mutableStateOf(false) }
     var cameraReady by remember { mutableStateOf(false) }
-    var recognizedText by remember { mutableStateOf("") }
-    var status by remember {
-        mutableStateOf("Select the known floor, then scan a sign.")
-    }
-
-    var previousNodeId by remember { mutableStateOf<String?>(null) }
-    var consecutiveMatches by remember { mutableIntStateOf(0) }
-
+    var active by remember { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
+    var text by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("Keep still; frame one mapped sign and scan it twice.") }
+    var nodeId by remember { mutableStateOf<String?>(null) }
+    var matches by remember { mutableIntStateOf(0) }
+    var capturedAt by remember { mutableLongStateOf(-1L) }
+    var generation by remember { mutableIntStateOf(0) }
+    var submitted by remember { mutableStateOf(false) }
+    val alive = remember { mutableStateOf(true) }
+    val currentOnUse by rememberUpdatedState(onUseObservation)
+    val recognizer = remember { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     val previewView = remember(context) {
         PreviewView(context).apply {
-            implementationMode =
-                PreviewView.ImplementationMode.COMPATIBLE
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FIT_CENTER
         }
     }
 
-    val recognizer = remember {
-        TextRecognition.getClient(
-            TextRecognizerOptions.DEFAULT_OPTIONS
-        )
+    fun clearCandidate() {
+        nodeId = null
+        matches = 0
+        capturedAt = -1L
     }
 
-    val alive = remember { mutableStateOf(true) }
-
+    DisposableEffect(owner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                active = true
+                permissionGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            } else if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                active = false
+                generation++
+                clearCandidate()
+            }
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
     DisposableEffect(recognizer) {
         alive.value = true
-
-        onDispose {
-            alive.value = false
-            recognizer.close()
-        }
+        onDispose { alive.value = false; recognizer.close() }
     }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        permissionGranted = granted
-
-        status = if (granted) {
-            "Camera permission granted. Starting preview."
-        } else {
-            "Camera permission denied. Allow it to use sign recognition."
-        }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        permissionGranted = it
+        status = if (it) "Permission granted. Wait for preview." else "Camera permission denied."
     }
-
-    DisposableEffect(
-        permissionGranted,
-        lifecycleOwner,
-        previewView
-    ) {
+    DisposableEffect(permissionGranted, owner, previewView) {
         var disposed = false
         var provider: ProcessCameraProvider? = null
-
         val preview = Preview.Builder().build()
         cameraReady = false
-
         if (permissionGranted) {
             val future = ProcessCameraProvider.getInstance(context)
-
-            future.addListener(
-                {
-                    if (!disposed) {
-                        try {
-                            val cameraProvider = future.get()
-                            provider = cameraProvider
-
-                            if (
-                                !cameraProvider.hasCamera(
-                                    CameraSelector.DEFAULT_BACK_CAMERA
-                                )
-                            ) {
-                                status = "No rear camera is available."
-                            } else {
-                                preview.setSurfaceProvider(
-                                    previewView.surfaceProvider
-                                )
-
-                                cameraProvider.bindToLifecycle(
-                                    lifecycleOwner,
-                                    CameraSelector.DEFAULT_BACK_CAMERA,
-                                    preview
-                                )
-
-                                cameraReady = true
-                                status = "Preview started. Point at a mapped sign."
-                            }
-                        } catch (error: Exception) {
-                            cameraReady = false
-                            status =
-                                "Camera error: ${error.message ?: "Unknown error"}"
+            future.addListener({
+                if (!disposed) {
+                    try {
+                        val cameraProvider = future.get()
+                        provider = cameraProvider
+                        if (!cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
+                            status = "No rear camera available."
+                        } else {
+                            preview.setSurfaceProvider(previewView.surfaceProvider)
+                            cameraProvider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview)
+                            cameraReady = true
+                            status = "Preview ready. Frame a mapped sign."
                         }
-                    }
-                },
-                ContextCompat.getMainExecutor(context)
-            )
+                    } catch (e: Exception) { status = "Camera error: ${e.message}" }
+                }
+            }, ContextCompat.getMainExecutor(context))
         }
-
-        onDispose {
-            disposed = true
-            provider?.unbind(preview)
-        }
+        onDispose { disposed = true; provider?.unbind(preview) }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Landmark Scanner") },
-                navigationIcon = {
-                    TextButton(onClick = onBack) {
-                        Text("Back")
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .padding(12.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(
-                text = if (onUseObservation == null) {
-                    "Recognition only — no position correction is applied."
-                } else {
-                    "Confirm a consistent sign candidate to send an observation " +
-                            "to the Localization Lab."
-                },
-                color = MaterialTheme.colorScheme.primary
-            )
-
+    Scaffold(topBar = {
+        TopAppBar(title = { Text("Landmark Scanner") }, navigationIcon = {
+            TextButton(onClick = onBack) { Text("Back") }
+        })
+    }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).padding(12.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(if (onUseObservation == null) "Recognition only; no correction is submitted."
+            else "A confirmed candidate is sent to the calling screen. That screen may accept or reject the correction.")
             Text("Known current floor")
-
-            Row(
-                modifier = Modifier.horizontalScroll(
-                    rememberScrollState()
-                ),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 building.floors.forEach { floor ->
-                    FilterChip(
-                        selected = floorId == floor.floorId,
-                        enabled = !busy,
+                    FilterChip(selected = floorId == floor.floorId, enabled = !busy && !submitted,
                         onClick = {
                             floorId = floor.floorId
-                            previousNodeId = null
-                            consecutiveMatches = 0
-                            recognizedText = ""
-                            status = "Floor changed. Scan a sign on this floor."
-                        },
-                        label = { Text(floor.floorName) }
-                    )
+                            generation++
+                            clearCandidate()
+                            text = ""
+                            status = "Floor changed. Scan twice on this floor."
+                        }, label = { Text(floor.floorName) })
                 }
             }
-
             if (permissionGranted) {
-                AndroidView(
-                    factory = { previewView },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(300.dp)
-                )
-            } else {
-                Button(
-                    onClick = {
-                        permissionLauncher.launch(
-                            Manifest.permission.CAMERA
-                        )
-                    }
-                ) {
-                    Text("Allow camera")
-                }
-            }
-
-            Button(
-                enabled = permissionGranted && cameraReady && !busy,
+                AndroidView(factory = { previewView }, modifier = Modifier.fillMaxWidth().height(300.dp))
+            } else Button(onClick = { permission.launch(Manifest.permission.CAMERA) }) { Text("Allow camera") }
+            Button(enabled = active && permissionGranted && cameraReady && !busy && !submitted,
                 onClick = {
                     val bitmap = previewView.bitmap
-
-                    if (bitmap == null) {
-                        status = "Preview is not ready. Wait, then try again."
-                    } else {
+                    if (bitmap == null) status = "Preview not ready; try again shortly."
+                    else {
                         busy = true
-                        val scannedFloorId = floorId
-                        val capturedAtMs = SystemClock.elapsedRealtime()
-                        val input = InputImage.fromBitmap(bitmap, 0)
+                        val requestGeneration = generation
+                        val scannedFloor = floorId
+                        val timestamp = SystemClock.elapsedRealtime()
                         try {
-                            recognizer.process(input)
+                            recognizer.process(InputImage.fromBitmap(bitmap, 0))
                                 .addOnSuccessListener { result ->
-                                    if (alive.value) {
-                                        recognizedText = result.text
-
-                                        val matches = matchLandmarkText(
-                                            building = building,
-                                            recognizedText = result.text,
-                                            floorId = scannedFloorId
-                                        )
-
-                                        when {
-                                            result.text.isBlank() -> {
-                                                previousNodeId = null
-                                                consecutiveMatches = 0
-                                                status =
-                                                    "No readable text. Improve focus or lighting."
+                                    if (alive.value && active && generation == requestGeneration) {
+                                        text = result.text
+                                        val candidates = matchLandmarkText(building = building, recognizedText = result.text, floorId = scannedFloor)
+                                        if (result.text.isBlank() || candidates.size != 1) {
+                                            clearCandidate()
+                                            status = when {
+                                                result.text.isBlank() -> "No readable text. Improve focus or lighting."
+                                                candidates.isEmpty() -> "No mapped sign matched."
+                                                else -> "Ambiguous text. Frame only one sign."
                                             }
-
-                                            matches.isEmpty() -> {
-                                                previousNodeId = null
-                                                consecutiveMatches = 0
-                                                status =
-                                                    "Text read, but no mapped destination matched."
-                                            }
-
-                                            matches.size > 1 -> {
-                                                previousNodeId = null
-                                                consecutiveMatches = 0
-                                                status =
-                                                    "Ambiguous: " +
-                                                            matches.joinToString {
-                                                                it.name
-                                                            } +
-                                                            ". Frame only one sign."
-                                            }
-
-                                            else -> {
-                                                val match = matches.single()
-
-                                                consecutiveMatches =
-                                                    if (
-                                                        previousNodeId ==
-                                                        match.nodeId
-                                                    ) {
-                                                        consecutiveMatches + 1
-                                                    } else {
-                                                        1
-                                                    }
-
-                                                previousNodeId = match.nodeId
-                                                lastMatchedCaptureMs = capturedAtMs
-
-                                                status =
-                                                    if (consecutiveMatches >= 2) {
-                                                        "Consistent candidate: ${match.name}. " +
-                                                                "No position update applied."
-                                                    } else {
-                                                        "Candidate: ${match.name}. " +
-                                                                "Scan again to check consistency."
-                                                    }
-                                            }
+                                        } else {
+                                            val candidate = candidates.single()
+                                            matches = if (nodeId == candidate.nodeId &&
+                                                timestamp - capturedAt in 0L..30_000L) matches + 1 else 1
+                                            nodeId = candidate.nodeId
+                                            capturedAt = timestamp
+                                            status = if (matches >= 2) "Consistent candidate: ${candidate.name}. No correction applied yet."
+                                            else "Candidate: ${candidate.name}. Scan again."
                                         }
                                     }
                                 }
                                 .addOnFailureListener { error ->
-                                    if (alive.value) {
-                                        previousNodeId = null
-                                        consecutiveMatches = 0
-                                        status =
-                                            "OCR failed: ${error.message}"
+                                    if (alive.value && generation == requestGeneration) {
+                                        clearCandidate()
+                                        status = "OCR failed: ${error.message}"
                                     }
                                 }
                                 .addOnCompleteListener {
                                     bitmap.recycle()
-
-                                    if (alive.value) {
-                                        busy = false
-                                    }
+                                    if (alive.value) busy = false
                                 }
-                        } catch (error: Exception) {
+                        } catch (e: Exception) {
                             bitmap.recycle()
                             busy = false
-                            previousNodeId = null
-                            consecutiveMatches = 0
-                            status = "Could not scan: ${error.message}"
+                            clearCandidate()
+                            status = "Could not scan: ${e.message}"
                         }
                     }
-                }
-            ) {
-                Text(if (busy) "Reading sign..." else "Scan visible sign")
-            }
+                }) { Text(if (busy) "Reading…" else "Scan visible sign") }
             if (onUseObservation != null) {
-                Button(
-                    enabled =
-                        !busy &&
-                                previousNodeId != null &&
-                                consecutiveMatches >= 2,
+                Button(enabled = active && !busy && !submitted && nodeId != null && matches >= 2,
                     onClick = {
-                        val nodeId = previousNodeId
-                        val ageMs =
-                            SystemClock.elapsedRealtime() - lastMatchedCaptureMs
-
-                        if (nodeId == null || consecutiveMatches < 2) {
-                            status = "Scan the same mapped sign twice first."
-                        } else if (
-                            lastMatchedCaptureMs < 0L ||
-                            ageMs !in 0L..30_000L
-                        ) {
-                            previousNodeId = null
-                            consecutiveMatches = 0
-                            status = "Observation expired. Scan the sign again."
+                        val id = nodeId
+                        val age = SystemClock.elapsedRealtime() - capturedAt
+                        if (id == null || matches < 2 || capturedAt < 0L || age !in 0L..30_000L) {
+                            clearCandidate()
+                            status = "Observation expired or invalid. Scan twice again."
                         } else {
-                            onUseObservation.invoke(
-                                CameraLandmarkObservation(
-                                    nodeId = nodeId,
-                                    floorId = floorId,
-                                    observedText = recognizedText,
-                                    capturedAtElapsedMs = lastMatchedCaptureMs,
-                                    matchingScans = consecutiveMatches
-                                )
-                            )
+                            submitted = true
+                            currentOnUse?.invoke(CameraLandmarkObservation(id, floorId, text, capturedAt, matches))
                         }
-                    }
-                ) {
-                    Text("Use this observation")
-                }
+                    }) { Text("Use this observation") }
             }
             Card(Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        "Recognition status",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-
+                Column(Modifier.padding(12.dp)) {
                     Text(status)
-                    Text("Consecutive matching scans: $consecutiveMatches")
+                    Text("Consecutive matching scans: $matches")
                 }
             }
-
-            Text(
-                "Recognized text",
-                style = MaterialTheme.typography.titleMedium
-            )
-
-            Text(
-                recognizedText.ifBlank {
-                    "No text scanned yet."
-                }
-            )
-
-            Text(
-                "Expected signs on this floor",
-                style = MaterialTheme.typography.titleMedium
-            )
-
-            building.nodes.filter {
-                it.floorId == floorId && it.type != "JUNCTION"
-            }.forEach { node ->
-                Text("• ${node.name}")
-            }
+            Text("Recognized text", style = MaterialTheme.typography.titleMedium)
+            Text(text.ifBlank { "No text scanned yet." })
+            Text("Expected signs on this floor", style = MaterialTheme.typography.titleMedium)
+            building.nodes.filter { it.floorId == floorId && it.type != "JUNCTION" }.forEach { Text("• ${it.name}") }
         }
     }
 }
