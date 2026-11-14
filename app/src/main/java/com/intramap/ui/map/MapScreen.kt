@@ -24,7 +24,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.intramap.data.model.Building
 import com.intramap.data.model.LocationNode
-import com.intramap.navigation.NavigationSession
 import com.intramap.ui.navigation.NavigationMotionControls
 import com.intramap.ui.vision.LandmarkScannerScreen
 import java.util.Locale

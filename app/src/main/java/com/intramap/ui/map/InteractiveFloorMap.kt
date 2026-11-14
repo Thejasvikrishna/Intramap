@@ -21,7 +21,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.intramap.data.model.Building
 import com.intramap.data.model.LocationNode
-import com.intramap.navigation.NavigationSession
 import kotlin.math.min
 
 @Composable

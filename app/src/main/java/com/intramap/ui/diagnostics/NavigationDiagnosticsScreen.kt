@@ -28,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.intramap.data.model.Building
-import com.intramap.navigation.NavigationSession
 import kotlin.math.sqrt
 
 private data class SensorSample(

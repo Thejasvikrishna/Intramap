@@ -18,7 +18,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.intramap.sensors.ImuRecorder
-
+import androidx.compose.foundation.rememberScrollState
 @Composable
 fun NavigationMotionControls(
     enabled: Boolean,

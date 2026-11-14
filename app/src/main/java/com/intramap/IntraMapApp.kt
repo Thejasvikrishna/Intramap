@@ -35,7 +35,7 @@ import com.intramap.ui.map.MapScreen
 import com.intramap.ui.pdr.PdrScreen
 import com.intramap.ui.vision.LandmarkScannerScreen
 import com.intramap.vision.CameraLandmarkObservation
-
+import com.intramap.navigation.NavigationSession
 @Composable
 fun IntraMapApp(repo: MapRepository) {
     val nav = rememberNavController()
@@ -226,7 +226,10 @@ fun IntraMapApp(repo: MapRepository) {
             if (building == null) {
                 NavigationErrorScreen("Building not found.") { nav.popBackStack() }
             } else {
-                LandmarkScannerScreen(building) { nav.popBackStack() }
+                LandmarkScannerScreen(
+                    building = building,
+                    onBack = { nav.popBackStack() }
+                )
             }
         }
 
