@@ -35,7 +35,8 @@ import kotlin.math.min
 fun MapScreen(
     building: Building,
     initialFloorId: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenDiagnostics: () -> Unit = {}
 ) {
     val saver = remember(building) {
         Saver<NavigationSession, Bundle>(
@@ -278,6 +279,13 @@ fun MapScreen(
                                 Text("Scan entrance to start")
                             }
                         }
+                    }
+
+                    OutlinedButton(
+                        onClick = onOpenDiagnostics,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Diagnostics")
                     }
                 }
             }

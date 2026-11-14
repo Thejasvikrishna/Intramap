@@ -25,6 +25,7 @@ import com.intramap.data.repository.MapRepository
 import com.intramap.localization.lab.LocalizationLabEngine
 import com.intramap.ui.admin.AdminMappingScreen
 import com.intramap.ui.admin.PathRecordingScreen
+import com.intramap.ui.diagnostics.NavigationDiagnosticsScreen
 import com.intramap.ui.lab.LocalizationLabScreen
 import com.intramap.ui.map.MapScreen
 import com.intramap.ui.pdr.PdrScreen
@@ -119,6 +120,32 @@ fun IntraMapApp(repo: MapRepository) {
                 MapScreen(
                     building = building,
                     initialFloorId = floorId,
+                    onBack = { nav.popBackStack() },
+                    onOpenDiagnostics = {
+                        nav.navigate("diagnostics/$buildingId/$floorId")
+                    }
+                )
+            }
+        }
+
+        composable(
+            route = "diagnostics/{bid}/{fid}",
+            arguments = listOf(
+                navArgument("bid") { type = NavType.StringType },
+                navArgument("fid") { type = NavType.StringType }
+            )
+        ) { entry ->
+            val buildingId = entry.arguments?.getString("bid").orEmpty()
+            val floorId = entry.arguments?.getString("fid").orEmpty()
+            val building = repo.getBuilding(buildingId)
+
+            if (building == null || building.floors.none { it.floorId == floorId }) {
+                NavigationErrorScreen("Building or floor not found.") { nav.popBackStack() }
+            } else {
+                NavigationDiagnosticsScreen(
+                    building = building,
+                    initialFloorId = floorId,
+                    session = NavigationSession(building),
                     onBack = { nav.popBackStack() }
                 )
             }
