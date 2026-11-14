@@ -207,7 +207,9 @@ class LocalizationLabEngine(
             }
         }
 
-        distanceSinceCorrectionM += stepLengthM
+        if (moved > 0) {
+            distanceSinceCorrectionM += stepLengthM
+        }
 
         return LabUpdate(
             accepted = moved > 0,

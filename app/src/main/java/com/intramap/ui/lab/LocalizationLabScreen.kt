@@ -466,21 +466,6 @@ fun LocalizationLabScreen(
                     valueRange = 0f..1f
                 )
 
-                Button(
-                    onClick = {
-                        val update = engine.observeLandmark(
-                            nodeId = selectedLandmarkId,
-                            simulatedQuality = landmarkQuality.toDouble(),
-                            adaptive = true
-                        )
-
-                        revision++
-                        status = update.message
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Observe selected landmark")
-                }
 
                 if (onOpenScanner != null) {
                     Button(
