@@ -1,0 +1,40 @@
+{
+  "buildingId": "blockA",
+  "buildingName": "Block A",
+  "description": "Main academic block",
+  "floors": [
+    { "floorId": "A0", "floorNumber": 0, "floorName": "Ground", "widthM": 40, "heightM": 20 },
+    { "floorId": "A1", "floorNumber": 1, "floorName": "First", "widthM": 40, "heightM": 20 }
+  ],
+  "nodes": [
+    { "nodeId": "A0_entry", "floorId": "A0", "name": "Main Entrance", "type": "ENTRANCE", "x": 2, "y": 10 },
+    { "nodeId": "A0_j1", "floorId": "A0", "name": "Corridor Junction 1", "type": "JUNCTION", "x": 20, "y": 10 },
+    { "nodeId": "A0_lib", "floorId": "A0", "name": "Library", "type": "LIBRARY", "x": 20, "y": 4, "keywords": ["books", "reading"] },
+    { "nodeId": "A0_cafe", "floorId": "A0", "name": "Cafeteria", "type": "CAFETERIA", "x": 20, "y": 16, "keywords": ["food", "canteen"] },
+    { "nodeId": "A0_stairs", "floorId": "A0", "name": "Staircase", "type": "STAIRS", "x": 30, "y": 10, "connectorGroupId": "STAIR1" },
+    { "nodeId": "A0_elev", "floorId": "A0", "name": "Elevator", "type": "ELEVATOR", "x": 36, "y": 10, "connectorGroupId": "ELEV1" },
+
+    { "nodeId": "A1_stairs", "floorId": "A1", "name": "Staircase", "type": "STAIRS", "x": 30, "y": 10, "connectorGroupId": "STAIR1" },
+    { "nodeId": "A1_elev", "floorId": "A1", "name": "Elevator", "type": "ELEVATOR", "x": 36, "y": 10, "connectorGroupId": "ELEV1" },
+    { "nodeId": "A1_j1", "floorId": "A1", "name": "Corridor Junction 1", "type": "JUNCTION", "x": 20, "y": 10 },
+    { "nodeId": "A1_lab", "floorId": "A1", "name": "AI Lab 101", "type": "LAB", "x": 20, "y": 16, "keywords": ["machine learning", "computer lab"] },
+    { "nodeId": "A1_office", "floorId": "A1", "name": "HOD Office", "type": "OFFICE", "x": 10, "y": 4, "keywords": ["head of department", "faculty"] },
+    { "nodeId": "A1_wc", "floorId": "A1", "name": "Restroom", "type": "RESTROOM", "x": 30, "y": 4, "keywords": ["toilet", "washroom"] }
+  ],
+  "edges": [
+    { "edgeId": "e1", "from": "A0_entry", "to": "A0_j1", "distance": 18 },
+    { "edgeId": "e2", "from": "A0_j1", "to": "A0_lib", "distance": 6 },
+    { "edgeId": "e3", "from": "A0_j1", "to": "A0_cafe", "distance": 6 },
+    { "edgeId": "e4", "from": "A0_j1", "to": "A0_stairs", "distance": 10 },
+    { "edgeId": "e5", "from": "A0_stairs", "to": "A0_elev", "distance": 6 },
+
+    { "edgeId": "e6", "from": "A0_stairs", "to": "A1_stairs", "distance": 8, "accessibilityType": "STAIRS_ONLY" },
+    { "edgeId": "e7", "from": "A0_elev", "to": "A1_elev", "distance": 8, "accessibilityType": "STEP_FREE" },
+
+    { "edgeId": "e8", "from": "A1_stairs", "to": "A1_elev", "distance": 6 },
+    { "edgeId": "e9", "from": "A1_stairs", "to": "A1_j1", "distance": 10 },
+    { "edgeId": "e10", "from": "A1_j1", "to": "A1_lab", "distance": 6 },
+    { "edgeId": "e11", "from": "A1_j1", "to": "A1_office", "distance": 11.7 },
+    { "edgeId": "e12", "from": "A1_elev", "to": "A1_wc", "distance": 9.2 }
+  ]
+}
