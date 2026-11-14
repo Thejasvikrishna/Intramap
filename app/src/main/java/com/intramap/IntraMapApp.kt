@@ -11,9 +11,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavType
@@ -21,6 +24,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.intramap.data.model.Building
 import com.intramap.data.repository.MapRepository
 import com.intramap.localization.lab.LocalizationLabEngine
 import com.intramap.ui.admin.AdminMappingScreen
@@ -45,11 +49,36 @@ fun IntraMapApp(repo: MapRepository) {
         startDestination = "buildings"
     ) {
         composable("buildings") {
-            val buildings = remember(repo) { repo.getBuildings() }
+            var buildings by remember(repo) { mutableStateOf(repo.getBuildings()) }
+            var refreshMessage by remember { mutableStateOf<String?>(null) }
+
+            LaunchedEffect(repo) {
+                repo.refreshPublishedMaps()
+                    .onSuccess { count ->
+                        buildings = repo.getBuildings()
+                        refreshMessage = if (count == 0) {
+                            "No remote published maps were available."
+                        } else {
+                            "Refreshed $count published map(s)."
+                        }
+                    }
+                    .onFailure {
+                        buildings = repo.getBuildings()
+                        refreshMessage = "Offline maps only. Could not refresh remote maps."
+                    }
+            }
 
             Column(Modifier.padding(16.dp)) {
                 Text("IntraMap", style = MaterialTheme.typography.headlineMedium)
                 Text("Find places and navigate indoors.")
+
+                refreshMessage?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
 
                 TextButton(onClick = { nav.navigate("admin") }) {
                     Text("Admin: add building or record path")
