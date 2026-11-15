@@ -40,7 +40,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var loadedFloor by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Open your building, choose a floor and walk to record its routes.") }
-    var confirmPublish by remember { mutableStateOf(false) }
+    var reviewing by remember { mutableStateOf(false) }
 
     fun perform(block: suspend () -> Unit) {
         if (busy) return
@@ -52,21 +52,19 @@ fun AdminMappingScreen(onBack: () -> Unit) {
             finally { busy = false }
         }
     }
+    fun clearSelection() {
+        version = null; floors = emptyList(); nodes = emptyList(); recordings = emptyList(); loadedFloor = null
+        start = null; facing = null; end = null; floorKey = ""; floorName = ""; floorNumber = "0"
+    }
     suspend fun refreshFloor() {
-        val w = requireNotNull(workspace)
-        val v = requireNotNull(version)
-        val b = requireNotNull(building)
-        nodes = w.nodes(v.id, floorKey.trim())
-        recordings = w.recordings(b.id, floorKey.trim())
-        floors = w.floors(v.id)
-        loadedFloor = floorKey.trim()
-        start = null; facing = null; end = null
+        val w = requireNotNull(workspace); val v = requireNotNull(version); val b = requireNotNull(building)
+        nodes = w.nodes(v.id,floorKey.trim()); recordings = w.recordings(b.id,floorKey.trim()); floors = w.floors(v.id)
+        loadedFloor = floorKey.trim(); start = null; facing = null; end = null
     }
     fun open(selected: MappingBuilding) = perform {
-        building = selected
+        clearSelection(); building = selected
         version = requireNotNull(workspace).draft(selected.id)
         floors = workspace.floors(requireNotNull(version).id)
-        nodes = emptyList(); recordings = emptyList(); loadedFloor = null
         status = "Draft opened. A new draft does not copy an older published map."
     }
     LaunchedEffect(workspace) {
@@ -77,94 +75,66 @@ fun AdminMappingScreen(onBack: () -> Unit) {
         }
     }
     if (recording) {
-        PathRecordingScreen(
-            buildingId = requireNotNull(building).id,
-            floorKey = floorKey.trim(), startAnchorKey = null,
-            onBack = { recording = false; loadedFloor = null }
-        )
+        PathRecordingScreen(buildingId = requireNotNull(building).id,floorKey = floorKey.trim(),startAnchorKey = null,
+            onBack = { recording = false; loadedFloor = null })
         return
     }
-    if (confirmPublish) {
-        AlertDialog(
-            onDismissRequest = { confirmPublish = false },
-            title = { Text("Publish reviewed walking map?") },
-            text = { Text("Confirm that paths, landmark names, joins and direction alignment match the real building. This publishes the entire draft, not just this floor. Sensor distances are estimates. Cross-floor links are not created automatically.") },
-            confirmButton = { TextButton(enabled = !busy, onClick = {
-                confirmPublish = false
-                perform {
-                    requireNotNull(writer).publishVersion(requireNotNull(version).id)
-                    version = null; loadedFloor = null; nodes = emptyList(); recordings = emptyList()
-                    status = "Published. Visitors can refresh the building list to download this map."
-                }
-            }) { Text("Publish") } },
-            dismissButton = { TextButton(onClick = { confirmPublish = false }) { Text("Cancel") } }
-        )
+    if (reviewing && client != null && building != null && version != null) {
+        DraftMapReviewScreen(client,requireNotNull(building),requireNotNull(version).id,
+            onBack = { reviewing = false; loadedFloor = null },
+            onPublished = { reviewing = false; clearSelection(); status = "Published reviewed map. Visitors can refresh the building list to download it." })
+        return
     }
     Scaffold(topBar = {
-        TopAppBar(title = { Text("Walking map studio") }, navigationIcon = {
-            TextButton(enabled = !busy, onClick = onBack) { Text("Back") }
-        })
+        TopAppBar(title = { Text("Walking map studio") },navigationIcon = { TextButton(enabled = !busy,onClick = onBack) { Text("Back") } })
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (workspace == null) { Text("Supabase is not configured."); return@Column }
             Text(status)
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text("Your buildings", style = MaterialTheme.typography.titleMedium)
-            buildings.forEach { item ->
-                OutlinedButton(enabled = !busy, onClick = { open(item) }, modifier = Modifier.fillMaxWidth()) { Text(item.name) }
-            }
-            OutlinedTextField(key, { key = it }, label = { Text("New building ID") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(name, { name = it }, label = { Text("New building name") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
-            Button(enabled = !busy && key.isNotBlank() && name.isNotBlank(), onClick = {
+            Text("Your buildings",style = MaterialTheme.typography.titleMedium)
+            buildings.forEach { item -> OutlinedButton(enabled = !busy,onClick = { open(item) },modifier = Modifier.fillMaxWidth()) { Text(item.name) } }
+            OutlinedTextField(key,{ key = it },label = { Text("New building ID") },enabled = !busy,modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(name,{ name = it },label = { Text("New building name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
+            Button(enabled = !busy && key.isNotBlank() && name.isNotBlank(),onClick = {
                 perform {
+                    clearSelection()
                     val current = workspace.ownedBuildings()
-                    val created = current.firstOrNull { it.buildingKey == key.trim() }
-                        ?: requireNotNull(writer).createBuilding(key.trim(), name.trim(), "")
-                    building = created
-                    buildings = workspace.ownedBuildings()
-                    version = workspace.draft(created.id)
+                    val created = current.firstOrNull { it.buildingKey == key.trim() } ?: requireNotNull(writer).createBuilding(key.trim(),name.trim(),"")
+                    building = created; buildings = workspace.ownedBuildings(); version = workspace.draft(created.id)
                     floors = workspace.floors(requireNotNull(version).id)
-                    loadedFloor = null; nodes = emptyList(); recordings = emptyList()
                     status = "Building and draft ready. Choose a floor below."
                 }
             }) { Text("Create or resume building") }
             if (version != null) {
                 HorizontalDivider()
-                Text("${building?.name} · draft ${version?.versionNo}", style = MaterialTheme.typography.titleMedium)
-                floors.forEach { floor ->
-                    TextButton(enabled = !busy, onClick = {
-                        floorKey = floor.floorKey; floorName = floor.name; floorNumber = floor.floorNumber.toString()
-                        loadedFloor = null
-                    }) { Text(floor.name) }
-                }
-                OutlinedTextField(floorKey, { floorKey = it; loadedFloor = null }, label = { Text("Floor ID") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(floorName, { floorName = it }, label = { Text("Floor name") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(floorNumber, { floorNumber = it }, label = { Text("Floor number") }, enabled = !busy, modifier = Modifier.fillMaxWidth())
+                Text("${building?.name} · draft ${version?.versionNo}",style = MaterialTheme.typography.titleMedium)
+                OutlinedButton(enabled = !busy && floors.isNotEmpty(),onClick = { reviewing = true }) { Text("Open draft map for review / publication") }
+                floors.forEach { floor -> TextButton(enabled = !busy,onClick = {
+                    floorKey = floor.floorKey; floorName = floor.name; floorNumber = floor.floorNumber.toString(); loadedFloor = null
+                }) { Text(floor.name) } }
+                OutlinedTextField(floorKey,{ floorKey = it; loadedFloor = null },label = { Text("Floor ID") },enabled = !busy,modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(floorName,{ floorName = it },label = { Text("Floor name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(floorNumber,{ floorNumber = it },label = { Text("Floor number") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 Text("No X/Y or distance entry. Floor display bounds are derived from imported walking traces.")
-                OutlinedButton(enabled = !busy && floorKey.isNotBlank(), onClick = { perform { refreshFloor(); status = "Floor recordings loaded." } }) { Text("Load / refresh floor") }
-                Button(enabled = !busy && floorKey.isNotBlank() && floorName.isNotBlank() && floorNumber.toIntOrNull() != null,
-                    onClick = { recording = true }) { Text("Walk and record a route") }
+                OutlinedButton(enabled = !busy && floorKey.isNotBlank(),onClick = { perform { refreshFloor(); status = "Floor recordings loaded." } }) { Text("Load / refresh floor") }
+                Button(enabled = !busy && floorKey.isNotBlank() && floorName.isNotBlank() && floorNumber.toIntOrNull() != null,onClick = { recording = true }) { Text("Walk and record a route") }
                 if (loadedFloor == floorKey.trim()) {
                     if (nodes.isNotEmpty()) {
                         Text("Joining an existing floor requires the actual start and facing landmarks. During recording, align Forward while facing the chosen landmark. Proximity alone never joins paths.")
-                        WorkspaceNodePicker("Starting landmark", nodes, start) { start = it }
-                        WorkspaceNodePicker("Facing landmark", nodes.filter { it.nodeKey != start }, facing) { facing = it }
-                        WorkspaceNodePicker("Optional end join (only if physically reached)", nodes, end) { end = it }
+                        WorkspaceNodePicker("Starting landmark",nodes,start) { start = it }
+                        WorkspaceNodePicker("Facing landmark",nodes.filter { it.nodeKey != start },facing) { facing = it }
+                        WorkspaceNodePicker("Optional end join (only if physically reached)",nodes,end) { end = it }
                     } else Text("First route: its starting position and Forward direction define this floor's local frame.")
-                    Text("Submitted recordings", style = MaterialTheme.typography.titleMedium)
-                    recordings.forEach { item ->
-                        OutlinedButton(enabled = !busy && floorName.isNotBlank() && floorNumber.toIntOrNull() != null &&
-                            (nodes.isEmpty() || (start != null && facing != null && start != facing)), onClick = {
-                            perform {
-                                workspace.importRecording(item.id, requireNotNull(version).id, floorName.trim(), floorNumber.toInt(), start, facing, end)
-                                refreshFloor()
-                                status = "Trace imported atomically into draft. Repeating this import does not duplicate it. Review before publishing."
-                            }
-                        }, modifier = Modifier.fillMaxWidth()) { Text("Import recording ${item.id.take(8)}") }
-                    }
+                    Text("Submitted recordings",style = MaterialTheme.typography.titleMedium)
+                    recordings.forEach { item -> OutlinedButton(enabled = !busy && floorName.isNotBlank() && floorNumber.toIntOrNull() != null &&
+                        (nodes.isEmpty() || (start != null && facing != null && start != facing)),onClick = {
+                        perform {
+                            workspace.importRecording(item.id,requireNotNull(version).id,floorName.trim(),floorNumber.toInt(),start,facing,end)
+                            refreshFloor(); status = "Trace imported into draft. Open the draft map to review all floors before publishing."
+                        }
+                    },modifier = Modifier.fillMaxWidth()) { Text("Import recording ${item.id.take(8)}") } }
                     if (recordings.isEmpty()) Text("No submitted recordings on this floor. Record a walk, submit, then refresh.")
-                    Button(enabled = !busy && nodes.size >= 2, onClick = { confirmPublish = true }) { Text("Review and publish draft") }
                 }
             }
         }
@@ -172,12 +142,10 @@ fun AdminMappingScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun WorkspaceNodePicker(label: String, nodes: List<MappingNode>, selected: String?, choose: (String?) -> Unit) {
-    Text(label, style = MaterialTheme.typography.labelLarge)
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(selected = selected == null, onClick = { choose(null) }, label = { Text("None") })
-        nodes.forEach { node ->
-            FilterChip(selected = selected == node.nodeKey, onClick = { choose(node.nodeKey) }, label = { Text("${node.name} · ${node.nodeKey.takeLast(8)}") })
-        }
+private fun WorkspaceNodePicker(label: String,nodes: List<MappingNode>,selected: String?,choose: (String?) -> Unit) {
+    Text(label,style = MaterialTheme.typography.labelLarge)
+    Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        FilterChip(selected = selected == null,onClick = { choose(null) },label = { Text("None") })
+        nodes.forEach { node -> FilterChip(selected = selected == node.nodeKey,onClick = { choose(node.nodeKey) },label = { Text("${node.name} · ${node.nodeKey.takeLast(8)}") }) }
     }
 }
