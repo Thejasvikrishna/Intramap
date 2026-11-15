@@ -39,7 +39,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     var recording by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var loadedFloor by remember { mutableStateOf<String?>(null) }
-    var status by remember { mutableStateOf("Open your building, choose a floor and walk to record its routes.") }
+    var status by remember { mutableStateOf("Open an editable building, choose a floor and walk to record routes.") }
     var reviewing by remember { mutableStateOf(false) }
 
     fun perform(block: suspend () -> Unit) {
@@ -48,7 +48,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
         scope.launch {
             try { block() }
             catch (e: CancellationException) { throw e }
-            catch (_: Exception) { status = "Operation failed. Check the migration, sign-in and permissions; refresh before retrying." }
+            catch (_: Exception) { status = "Operation failed. Check migrations 0003–0005, sign-in and permissions; refresh before retrying." }
             finally { busy = false }
         }
     }
@@ -65,13 +65,13 @@ fun AdminMappingScreen(onBack: () -> Unit) {
         clearSelection(); building = selected
         version = requireNotNull(workspace).draft(selected.id)
         floors = workspace.floors(requireNotNull(version).id)
-        status = "Draft opened. A new draft does not copy an older published map."
+        status = "Draft opened. New drafts copy the current published map when available; existing drafts are resumed unchanged."
     }
     LaunchedEffect(workspace) {
         if (workspace != null) {
-            try { buildings = workspace.ownedBuildings() }
+            try { buildings = workspace.editableBuildings() }
             catch (e: CancellationException) { throw e }
-            catch (_: Exception) { status = "Could not load your buildings. Check sign-in and connectivity." }
+            catch (_: Exception) { status = "Could not load editable buildings. Check sign-in, connectivity and migration 0005." }
         }
     }
     if (recording) {
@@ -92,18 +92,19 @@ fun AdminMappingScreen(onBack: () -> Unit) {
             if (workspace == null) { Text("Supabase is not configured."); return@Column }
             Text(status)
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text("Your buildings",style = MaterialTheme.typography.titleMedium)
+            Text("Editable buildings · owned or shared",style = MaterialTheme.typography.titleMedium)
             buildings.forEach { item -> OutlinedButton(enabled = !busy,onClick = { open(item) },modifier = Modifier.fillMaxWidth()) { Text(item.name) } }
+            OutlinedButton(enabled = !busy,onClick = { perform { buildings = workspace.editableBuildings() } }) { Text("Refresh buildings") }
             OutlinedTextField(key,{ key = it },label = { Text("New building ID") },enabled = !busy,modifier = Modifier.fillMaxWidth())
             OutlinedTextField(name,{ name = it },label = { Text("New building name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
             Button(enabled = !busy && key.isNotBlank() && name.isNotBlank(),onClick = {
                 perform {
                     clearSelection()
-                    val current = workspace.ownedBuildings()
+                    val current = workspace.editableBuildings()
                     val created = current.firstOrNull { it.buildingKey == key.trim() } ?: requireNotNull(writer).createBuilding(key.trim(),name.trim(),"")
-                    building = created; buildings = workspace.ownedBuildings(); version = workspace.draft(created.id)
+                    building = created; buildings = workspace.editableBuildings(); version = workspace.draft(created.id)
                     floors = workspace.floors(requireNotNull(version).id)
-                    status = "Building and draft ready. Choose a floor below."
+                    status = "Building and draft ready. Existing drafts are preserved; new drafts copy the published map when available."
                 }
             }) { Text("Create or resume building") }
             if (version != null) {
@@ -117,7 +118,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
                 OutlinedTextField(floorName,{ floorName = it },label = { Text("Floor name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(floorNumber,{ floorNumber = it },label = { Text("Floor number") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 Text("No X/Y or distance entry. Floor display bounds are derived from imported walking traces.")
-                OutlinedButton(enabled = !busy && floorKey.isNotBlank(),onClick = { perform { refreshFloor(); status = "Floor recordings loaded." } }) { Text("Load / refresh floor") }
+                OutlinedButton(enabled = !busy && floorKey.isNotBlank(),onClick = { perform { refreshFloor(); status = "Pending floor recordings loaded." } }) { Text("Load / refresh floor") }
                 Button(enabled = !busy && floorKey.isNotBlank() && floorName.isNotBlank() && floorNumber.toIntOrNull() != null,onClick = { recording = true }) { Text("Walk and record a route") }
                 if (loadedFloor == floorKey.trim()) {
                     if (nodes.isNotEmpty()) {
@@ -126,7 +127,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
                         WorkspaceNodePicker("Facing landmark",nodes.filter { it.nodeKey != start },facing) { facing = it }
                         WorkspaceNodePicker("Optional end join (only if physically reached)",nodes,end) { end = it }
                     } else Text("First route: its starting position and Forward direction define this floor's local frame.")
-                    Text("Submitted recordings",style = MaterialTheme.typography.titleMedium)
+                    Text("Submitted recordings awaiting import",style = MaterialTheme.typography.titleMedium)
                     recordings.forEach { item -> OutlinedButton(enabled = !busy && floorName.isNotBlank() && floorNumber.toIntOrNull() != null &&
                         (nodes.isEmpty() || (start != null && facing != null && start != facing)),onClick = {
                         perform {
@@ -134,7 +135,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
                             refreshFloor(); status = "Trace imported into draft. Open the draft map to review all floors before publishing."
                         }
                     },modifier = Modifier.fillMaxWidth()) { Text("Import recording ${item.id.take(8)}") } }
-                    if (recordings.isEmpty()) Text("No submitted recordings on this floor. Record a walk, submit, then refresh.")
+                    if (recordings.isEmpty()) Text("No unimported submitted recordings on this floor. Record a walk, submit, then refresh.")
                 }
             }
         }

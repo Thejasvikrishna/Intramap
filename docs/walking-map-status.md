@@ -1,41 +1,33 @@
 # Walking map implementation status
 
-This branch is incremental and is not production validated.
+Source implementation only: the full requested feature set is not complete or production validated.
 
 ## Implemented in source
-- Sensor step events feed a relative walking trace using the localization engine's heading convention.
-- Trace preview, named markers, explicit review and retryable point uploads.
-- Owner building selection and resuming an existing draft, rather than mandatory duplicate creation.
-- Admin recording entry without manual X/Y, width, height or edge-distance fields.
-- Atomic, permission-checked recording import into draft map nodes and edges.
-- Explicit start/facing landmark alignment for additional routes and an optional endpoint join within 3 m.
-- Idempotent import provenance and floor display bounds derived from observed geometry.
-- Explicit publication confirmation. Visitors consume the existing published-map repository.
+- Walking traces, named markers, pan/zoom preview and retryable point uploads.
+- Account-scoped local checkpoints, paused recovery and frozen geometry after upload attempts. Only acknowledged writes are durable; sudden termination may lose pending samples.
+- Owned/shared editable-building selection, unchanged draft resumption and atomic cloning of the published graph into a newly created draft.
+- Cloning preserves floors, node keys, connectors, keywords, edges, accessibility and reference-anchor metadata. Existing image/storage paths are reused; objects are not copied or uploaded.
+- Pending-recording selection excludes recordings already imported into any version.
+- Atomic recording import, explicit start/facing alignment, optional endpoint joins and import provenance.
+- Map-first visitor interface connected to the existing movement-driven session.
+- Floor-by-floor visual draft review and publication checked against the server snapshot fingerprint.
 
-## Deployment
-Apply supabase/migrations/0003_walking_import.sql once after existing migrations, in a transaction.
-A GitHub commit does not apply SQL to Supabase. Verify live policies separately. Do not disable RLS.
-The migration uses SECURITY DEFINER only for the atomic import, with an empty search path,
-an authenticated-user check, parent-building authorization, draft/recording row locks and no public/anon execute.
-It never publishes a version and never infers a connection merely from crossing paths.
+## Outstanding
+- ARCore marker registration, pose alignment and automatic visitor heading recovery. Current scanner is OCR-based.
+- Calibrated stride estimation; existing motion controls assume 0.70 m.
+- On-map editing, undo, and explicit cross-floor connector authoring.
+- Membership-management UI; shared selection currently respects memberships already stored in the database.
+- Verified app compilation, test execution, SQL integration and physical-device positioning validation.
 
-## Required checks (not executed here)
-- :app:compileDebugKotlin and :app:testDebugUnitTest.
-- Physical-device straight walks, corners, stopping, resume alignment, permission denial and background pause.
-- Owner import success; nonmember and anonymous rejection; published-version import rejection.
-- Repeat import creates no duplicate nodes/edges; importing to another version is rejected.
-- A failing import rolls back all nodes, edges, bounds and provenance.
-- Start/facing/end nodes must belong to the same draft and floor; endpoint drift >3 m is rejected.
-- Published recording appears after visitor refresh; unpublished draft remains private.
+## Deployment and data preservation
+GitHub commits do not apply SQL to Supabase. Apply new migrations 0003, 0004 and 0005 in order only if not already applied. Do not rerun the initial schema on a populated database. Keep RLS enabled.
+Migration 0004 replaces direct authenticated access to the legacy publication RPC with the reviewed wrapper; deploy the matching app before relying on publication.
+Migration 0005 changes workspace opening: an existing draft is returned unchanged, including a previously empty draft. Only a newly created draft clones the current published version. With no published version, a new draft is empty by design.
+The published version is not edited by cloning. New row UUIDs are generated while version-scoped graph keys are preserved. Any failure rolls back the clone transaction.
+Floor dimensions derived from recorded geometry are observed display extents, not architectural boundaries.
 
-## Still outstanding
-- Actual ARCore/reference-marker alignment and visitor heading recovery. Existing scanner is OCR-based, not ARCore.
-- Automatic stride estimation/calibration: current controls assume 0.70 m; distances are estimates.
-- Durable local recording recovery after process death; unsubmitted samples remain memory-only.
-- On-map draft graph and imported-recording review, editing, undo, and richer map-first visitor UI.
-- Explicit cross-floor connector-link authoring. Marking stairs/elevator alone does not link floors.
-- Cloning published maps into editable drafts and exposing shared-editor buildings (current picker is owner-only).
-- Build/device/SQL integration validation, CI and release readiness.
-
-A new draft is empty, not an automatic copy of the published version. Review all floors before publishing.
-Floor width/height here are observed display extents, not measured architectural boundaries or walls.
+## Validation still required
+Compile and run unit tests; test recovery, failed storage, failed uploads, account changes and device reboot.
+Verify owner/member access and anonymous/nonmember rejection. Test simultaneous draft opens, unchanged draft resumption, exact metadata copying and rollback on clone failure.
+Verify stale-review publication rejection, floor connections and real-building navigation before release.
+CI infrastructure exists but is not a substitute for these checks. No additional CI-reporting workflow is part of this feature patch.
