@@ -31,21 +31,26 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          problem-matcher: true
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          accept-android-sdk-licenses: 'yes'
+          accept-android-sdk-licenses: 'true'
           log-accepted-android-sdk-licenses: 'false'
       - name: Install the project's compile SDK
         run: sdkmanager "platforms;android-37"
       - name: Compile, test and assemble debug app
-        run: bash ./gradlew --no-daemon --stacktrace :app:compileDebugKotlin :app:testDebugUnitTest :app:assembleDebug
+        shell: bash
+        run: |
+          set -o pipefail
+          bash ./gradlew --no-daemon --stacktrace :app:compileDebugKotlin :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee android-validation.log
       - name: Preserve build and unit-test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-validation-reports
           path: |
+            android-validation.log
             app/build/reports/
             app/build/test-results/
           if-no-files-found: ignore
