@@ -62,6 +62,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
+    implementation("com.google.ar:core:1.54.0")
 
     implementation(platform(libs.supabase.bom))
     implementation(libs.supabase.postgrest)
