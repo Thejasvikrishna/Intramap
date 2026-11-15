@@ -11,7 +11,8 @@ import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 /**
  * Admin-side Supabase operations.
  *
@@ -88,7 +89,7 @@ class SupabaseMappingDataSource(private val client: SupabaseClient) {
                 put("node_type", nodeType)
                 put("x", x)
                 put("y", y)
-                put("keywords", keywords)
+                put("keywords", JsonArray(keywords.map { JsonPrimitive(it) }))
             }
         ).decodeSingle<MappingNode>()
     }

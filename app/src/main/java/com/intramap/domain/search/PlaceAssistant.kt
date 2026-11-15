@@ -53,13 +53,22 @@ object PlaceAssistant {
 
     private fun findPlace(building: Building, query: String): LocationNode? {
         val cleaned = query
+            .trim()
+            .lowercase()
             .removePrefix("take me to")
+            .trim()
             .removePrefix("navigate to")
+            .trim()
             .removePrefix("where is")
+            .trim()
             .removePrefix("find")
-            .removePrefix("the")
+            .trim()
             .removePrefix("nearest")
             .trim()
+            .removePrefix("the ")
+            .trim()
+
+        if (cleaned.isBlank()) return null
 
         return building.nodes.firstOrNull { node ->
             node.type != "JUNCTION" && (

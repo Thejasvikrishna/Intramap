@@ -12,7 +12,7 @@ import com.intramap.data.model.PathRecordingPoint
 import com.intramap.data.supabase.SupabaseClientFactory
 import com.intramap.data.supabase.SupabaseMappingDataSource
 import kotlinx.coroutines.launch
-
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PathRecordingScreen(
     buildingId: String,

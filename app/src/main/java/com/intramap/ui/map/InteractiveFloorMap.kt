@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.dp
 import com.intramap.data.model.Building
 import com.intramap.data.model.LocationNode
 import kotlin.math.min
-
+import com.intramap.navigation.NavigationSession
 @Composable
 fun InteractiveFloorMap(
     building: Building,

@@ -10,7 +10,7 @@ import androidx.compose.ui.unit.dp
 import com.intramap.data.supabase.SupabaseClientFactory
 import com.intramap.data.supabase.SupabaseMappingDataSource
 import kotlinx.coroutines.launch
-
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminMappingScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()

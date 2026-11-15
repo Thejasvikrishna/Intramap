@@ -29,7 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.intramap.data.model.Building
 import kotlin.math.sqrt
-
+import com.intramap.navigation.NavigationSession
 private data class SensorSample(
     val values: FloatArray = floatArrayOf(),
     val timestamp: Long = 0L

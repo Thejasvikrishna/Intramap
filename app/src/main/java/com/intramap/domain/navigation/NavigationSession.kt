@@ -31,11 +31,39 @@ internal fun projectPoint(x: Double, y: Double, a: LocationNode, b: LocationNode
     val py = a.y + t * dy
     return Projection(px, py, t, hypot(x - px, y - py))
 }
-
+enum class FloorTravelMode {
+    AUTO,
+    STAIRS,
+    ELEVATOR
+}
 class NavigationSession(
     val building: Building,
     private val nowMs: () -> Long = { SystemClock.elapsedRealtime() }
 ) {
+    var floorTravelMode by mutableStateOf(FloorTravelMode.AUTO)
+        private set
+
+    var pendingFloorArrivalId by mutableStateOf<String?>(null)
+        private set
+
+    val pendingFloorArrival: LocationNode?
+        get() = nodes[pendingFloorArrivalId]
+
+    fun updateFloorTravelMode(mode: FloorTravelMode) {
+        if (pendingFloorArrivalId != null) {
+            status = "Finish or cancel the current floor change first."
+            return
+        }
+
+        if (stepFree && mode == FloorTravelMode.STAIRS) {
+            status = "Turn off Step-free before choosing stairs."
+            return
+        }
+
+        pauseMotion()
+        floorTravelMode = mode
+        reroute("Floor travel preference updated.")
+    }
     val errors = validateNavigationMap(building)
     val landmarks = building.nodes.filter { it.type != "JUNCTION" }
     private val nodes = building.nodes.associateBy { it.nodeId }
@@ -84,12 +112,30 @@ class NavigationSession(
     val nextNode: LocationNode? get() = routeNodes.getOrNull(nextIndex)
     val instruction: String get() {
         if (arrived) return "Arrived at ${destination?.name.orEmpty()}."
+        pendingFloorArrival?.let { target ->
+            val floorName = building.floors
+                .firstOrNull { it.floorId == target.floorId }
+                ?.floorName
+                ?: target.floorId
+
+            return "Tracking paused. Use the ${target.type.lowercase()} " +
+                    "to $floorName, then confirm arrival."
+        }
         val e = estimate ?: return "Confirm your starting location."
         if (route == null) return "Choose a reachable destination."
         val n = nextNode ?: return "Check your destination."
         if (n.floorId != e.floorId) {
-            val floorName = building.floors.firstOrNull { it.floorId == n.floorId }?.floorName ?: n.floorId
-            return "Use the ${n.type.lowercase()} to $floorName. Confirm only after reaching that floor."
+            val floorName = building.floors
+                .firstOrNull { it.floorId == n.floorId }
+                ?.floorName
+                ?: n.floorId
+
+            return if (transitionTarget != null) {
+                "At the ${n.type.lowercase()}. Start the floor change to $floorName."
+            } else {
+                "Approach the mapped ${n.type.lowercase()} for $floorName. " +
+                        "Floor change is waiting for a reliable connector position."
+            }
         }
         val generated = instructions.lastOrNull {
             it.routeIndex <= (nextIndex - 1).coerceAtLeast(0)
@@ -106,6 +152,7 @@ class NavigationSession(
         engine.reset(id)
         componentAnchorId = id
         refresh()
+        pendingFloorArrivalId = null
         restoredNote = null
         arrived = false
         blockedMotionCount = 0
@@ -120,10 +167,49 @@ class NavigationSession(
     }
 
     fun updateAccessibilityPreference(value: Boolean) {
+        if (pendingFloorArrivalId != null) {
+            status = "Finish or cancel the current floor change first."
+            return
+        }
+
+        pauseMotion()
         stepFree = value
+
+        if (value && floorTravelMode == FloorTravelMode.STAIRS) {
+            floorTravelMode = FloorTravelMode.AUTO
+        }
+
         reroute("Accessibility preference updated.")
     }
+    fun beginFloorTransition() {
+        val target = transitionTarget ?: run {
+            status =
+                "Move near the mapped source connector and correct your " +
+                        "position before starting the floor change."
+            return
+        }
 
+        pauseMotion()
+        pendingFloorArrivalId = target.nodeId
+
+        val floorName = building.floors
+            .firstOrNull { it.floorId == target.floorId }
+            ?.floorName
+            ?: target.floorId
+
+        status =
+            "Tracking paused. Use the ${target.type.lowercase()} to " +
+                    "$floorName. Confirm arrival only after physically reaching it."
+    }
+
+    fun cancelFloorTransition() {
+        pendingFloorArrivalId = null
+        pauseMotion()
+
+        status =
+            "Floor change cancelled. Position remains on the previous floor. " +
+                    "If you have moved floors, explicitly confirm your actual location."
+    }
     fun clearBlocked() {
         blocked = emptySet()
         reroute("Local blocked-path reports cleared.")
@@ -132,7 +218,7 @@ class NavigationSession(
     fun pauseMotion() { motionEpoch++ }
 
     fun walk(lengthM: Double, headingDeg: Double) {
-        if (!ready || arrived) return
+        if (!ready || arrived || pendingFloorArrivalId != null) return
         if (!lengthM.isFinite() || lengthM !in 0.1..2.0 || !headingDeg.isFinite()) return
         val update = engine.predict(lengthM, headingDeg)
         refresh()
@@ -177,14 +263,24 @@ class NavigationSession(
     }
 
     fun confirmTransition() {
-        val target = transitionTarget ?: run { status = "Move near the route's source connector first."; return }
+        val target = pendingFloorArrival ?: run {
+            status = "Start the floor change at the mapped connector first."
+            return
+        }
+
         val update = engine.confirmFloorTransition(target.nodeId)
         status = update.message
+
         if (update.accepted) {
+            pendingFloorArrivalId = null
             pauseMotion()
             componentAnchorId = target.nodeId
             refresh()
-            reroute(update.message + " Restart sensors and recalibrate on this floor.")
+
+            reroute(
+                update.message +
+                        " Restart sensors and recalibrate on this floor."
+            )
         }
     }
 
@@ -242,8 +338,36 @@ class NavigationSession(
             }
         }
         val allowed = building.edges.filter { edge ->
-            edge.isAvailable && edge.edgeId !in blocked &&
-                (!stepFree || edge.accessibilityType != "STAIRS_ONLY")
+            val from = nodes[edge.sourceNodeId]
+            val to = nodes[edge.destinationNodeId]
+
+            if (from == null || to == null) {
+                false
+            } else {
+                val crossesFloor = from.floorId != to.floorId
+
+                val usesStairs =
+                    edge.accessibilityType == "STAIRS_ONLY" ||
+                            (crossesFloor &&
+                                    (from.type == "STAIRS" || to.type == "STAIRS"))
+
+                val matchesPreference = when (floorTravelMode) {
+                    FloorTravelMode.AUTO -> true
+
+                    FloorTravelMode.STAIRS ->
+                        !crossesFloor ||
+                                (from.type == "STAIRS" && to.type == "STAIRS")
+
+                    FloorTravelMode.ELEVATOR ->
+                        !crossesFloor ||
+                                (from.type == "ELEVATOR" && to.type == "ELEVATOR")
+                }
+
+                edge.isAvailable &&
+                        edge.edgeId !in blocked &&
+                        (!stepFree || !usesStairs) &&
+                        matchesPreference
+            }
         }
         val pairs = allowed.mapNotNull { edge ->
             val a = nodes[edge.sourceNodeId] ?: return@mapNotNull null
@@ -334,6 +458,7 @@ class NavigationSession(
     private fun distance(e: LabEstimate, n: LocationNode) = hypot(e.x - n.x, e.y - n.y)
 
     fun snapshot(): Bundle = Bundle().apply {
+        putString("floorTravelMode", floorTravelMode.name)
         putString("building", building.buildingId)
         putString("destination", destinationId)
         putString("start", selectedStartId)
@@ -347,10 +472,21 @@ class NavigationSession(
     }
 
     fun restore(bundle: Bundle) {
+        pendingFloorArrivalId = null
         if (bundle.getString("building") != building.buildingId) return
         selectedStartId = bundle.getString("start")?.takeIf { it in nodes }
         destinationId = bundle.getString("destination")?.takeIf { it in nodes }
         stepFree = bundle.getBoolean("stepFree")
+        floorTravelMode = runCatching {
+            FloorTravelMode.valueOf(
+                bundle.getString("floorTravelMode")
+                    ?: FloorTravelMode.AUTO.name
+            )
+        }.getOrDefault(FloorTravelMode.AUTO)
+
+        if (stepFree && floorTravelMode == FloorTravelMode.STAIRS) {
+            floorTravelMode = FloorTravelMode.AUTO
+        }
         val validIds = building.edges.map { it.edgeId }.toSet()
         blocked = bundle.getStringArrayList("blocked").orEmpty().filter { it in validIds }.toSet()
         val f = bundle.getString("lastFloor")
