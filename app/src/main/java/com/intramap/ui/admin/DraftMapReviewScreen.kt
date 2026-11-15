@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import com.intramap.data.model.MappingBuilding
+import com.intramap.data.supabase.DraftFloorLinkSource
 import com.intramap.data.supabase.DraftMapEditSource
 import com.intramap.data.supabase.DraftMapReviewSource
 import com.intramap.data.supabase.DraftReviewSnapshot
@@ -28,6 +29,7 @@ import java.util.UUID
 fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, versionId: String, onBack: () -> Unit, onPublished: () -> Unit) {
     val api = remember(client) { DraftMapReviewSource(client) }
     val writer = remember(client) { DraftMapEditSource(client) }
+    val linkWriter = remember(client) { DraftFloorLinkSource(client) }
     val scope = rememberCoroutineScope()
     var snapshot by remember(versionId) { mutableStateOf<DraftReviewSnapshot?>(null) }
     var edits by remember(versionId) { mutableStateOf<DraftMapEdits?>(null) }
@@ -80,6 +82,25 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
         if (busy) return
         if (dirty) discardAction = action else if (action == "reload") reload++ else onBack()
     }
+    fun changeFloorLink(operation: suspend (String) -> Unit) {
+        if (busy || requiresReload || edits?.dirty == true) return
+        val baseline = snapshot ?: return
+        val graph = edits?.current ?: return
+        if (validateNavigationMap(graph).isNotEmpty()) { status = "Correct the draft before changing floor links."; return }
+        busy = true; reviewed = emptySet(); moving = false; joinOrigin = null
+        status = "Saving floor-link change…"
+        scope.launch {
+            try {
+                operation(baseline.fingerprint)
+                val fresh = api.load(versionId)
+                val saved = fresh.asBuilding(owner)
+                snapshot = fresh; edits = DraftMapEdits(saved); requiresReload = false; reviewed = emptySet()
+                status = "Floor-link change saved and reloaded. Review every floor before publishing."
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { requiresReload = true; reviewed = emptySet(); status = "Floor-link change rejected or unconfirmed. Reload before further writes. Check migration 0007, permissions, matching types and connector groups." }
+            finally { busy = false }
+        }
+    }
     BackHandler { request("leave") }
     if (discardAction != null) AlertDialog(onDismissRequest = { discardAction = null },title = { Text("Discard the local edit preview?") },
         text = { Text("Unsaved edits and undo history are memory-only. Reloading reads server state; a previously interrupted save may already have reached the server.") },
@@ -126,7 +147,14 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
                     }) { Text("Save edits") }
                     TextButton(enabled = !busy,onClick = { request("reload") }) { Text("Reload") }
                 }
+                if (building != null) key(current?.fingerprint,building) {
+                    DraftFloorLinkEditor(building,selected?.takeIf { it.floorId == floorId },
+                        enabled = !dirty && !requiresReload && errors.isEmpty() && current != null,busy = busy,
+                        onLink = { from,to,kind -> changeFloorLink { fingerprint -> linkWriter.link(versionId,fingerprint,from,to,kind,true) } },
+                        onRemove = { edge -> changeFloorLink { fingerprint -> linkWriter.remove(versionId,fingerprint,edge,true) } })
+                }
                 selected?.takeIf { it.floorId == floorId }?.let { node ->
+                    val graph = building ?: return@let
                     Text("${node.name} · ${node.type} · ${node.nodeId.takeLast(12)}")
                     TextButton(enabled = !busy && !requiresReload,onClick = { tools = !tools }) { Text(if (tools) "Hide edit tools" else "Edit selected point") }
                     if (tools) {
@@ -140,16 +168,16 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
                             TextButton(enabled = !busy && !requiresReload,onClick = { joinOrigin = node.nodeId; joinVerified = false; moving = false }) { Text("Join from here") }
                         }
                         if (moving) Text("Tap the corrected position on the map. Maximum 3 m; visual-reference floors may require re-registration.")
-                        building.edges.filter { it.sourceNodeId == node.nodeId || it.destinationNodeId == node.nodeId }.forEach { edge ->
+                        graph.edges.filter { it.sourceNodeId == node.nodeId || it.destinationNodeId == node.nodeId }.forEach { edge ->
                             val otherId = if (edge.sourceNodeId == node.nodeId) edge.destinationNodeId else edge.sourceNodeId
-                            val other = building.nodes.firstOrNull { it.nodeId == otherId }
+                            val other = graph.nodes.firstOrNull { it.nodeId == otherId }
                             FilterChip(selected = edge.isAvailable,enabled = !busy && !requiresReload,
                                 onClick = { edit { it.setAvailable(edge.edgeId,!edge.isAvailable) } },
                                 label = { Text("${other?.name ?: otherId}: ${if (edge.isAvailable) "open" else "blocked"}") })
                         }
                     }
                     if (joinOrigin != null && joinOrigin != node.nodeId) {
-                        val origin = building.nodes.firstOrNull { it.nodeId == joinOrigin }
+                        val origin = graph.nodes.firstOrNull { it.nodeId == joinOrigin }
                         Text("Join ${origin?.name.orEmpty()} to ${node.name}: nearby same-floor gaps only, never through walls.")
                         Row { Checkbox(joinVerified,onCheckedChange = { joinVerified = it },enabled = !busy && !requiresReload); Text("I verified a direct physical connection",Modifier.padding(top = 12.dp)) }
                         Button(enabled = joinVerified && !busy && !requiresReload,onClick = {
