@@ -36,6 +36,7 @@ import com.intramap.ui.pdr.PdrScreen
 import com.intramap.ui.vision.LandmarkScannerScreen
 import com.intramap.vision.CameraLandmarkObservation
 import com.intramap.navigation.NavigationSession
+import com.intramap.ui.auth.EditorAuthGate
 @Composable
 fun IntraMapApp(repo: MapRepository) {
     val nav = rememberNavController()
@@ -181,22 +182,61 @@ fun IntraMapApp(repo: MapRepository) {
         }
 
         composable("admin") {
-            AdminMappingScreen(onBack = { nav.popBackStack() })
+            EditorAuthGate(
+                onBack = {
+                    nav.popBackStack()
+                }
+            ) {
+                AdminMappingScreen(
+                    onBack = {
+                        nav.popBackStack()
+                    }
+                )
+            }
         }
 
         composable(
             route = "record/{bid}/{fid}",
             arguments = listOf(
-                navArgument("bid") { type = NavType.StringType },
-                navArgument("fid") { type = NavType.StringType }
+                navArgument("bid") {
+                    type = NavType.StringType
+                },
+                navArgument("fid") {
+                    type = NavType.StringType
+                }
             )
         ) { entry ->
-            PathRecordingScreen(
-                buildingId = entry.arguments?.getString("bid").orEmpty(),
-                floorKey = entry.arguments?.getString("fid").orEmpty(),
-                startAnchorKey = null,
-                onBack = { nav.popBackStack() }
-            )
+            val buildingId = entry.arguments
+                ?.getString("bid")
+                .orEmpty()
+
+            val floorId = entry.arguments
+                ?.getString("fid")
+                .orEmpty()
+
+            if (buildingId.isBlank() || floorId.isBlank()) {
+                NavigationErrorScreen(
+                    message = "Building or floor identifier is missing.",
+                    onBack = {
+                        nav.popBackStack()
+                    }
+                )
+            } else {
+                EditorAuthGate(
+                    onBack = {
+                        nav.popBackStack()
+                    }
+                ) {
+                    PathRecordingScreen(
+                        buildingId = buildingId,
+                        floorKey = floorId,
+                        startAnchorKey = null,
+                        onBack = {
+                            nav.popBackStack()
+                        }
+                    )
+                }
+            }
         }
 
         composable(

@@ -48,7 +48,9 @@ fun MapScreen(
 ) {
     val saver = remember(building) {
         Saver<NavigationSession, Bundle>(
-            save = { it.snapshot() },
+            save = { session ->
+                session.snapshot()
+            },
             restore = { saved ->
                 NavigationSession(building).apply {
                     restore(saved)
@@ -64,40 +66,65 @@ fun MapScreen(
         NavigationSession(building)
     }
 
+    val initialDisplayFloor = building.floors
+        .firstOrNull { it.floorId == initialFloorId }
+        ?.floorId
+        ?: building.floors.firstOrNull()?.floorId.orEmpty()
+
     var floorId by rememberSaveable(building.buildingId) {
-        mutableStateOf(initialFloorId)
+        mutableStateOf(initialDisplayFloor)
     }
 
-    var query by rememberSaveable {
+    var query by rememberSaveable(building.buildingId) {
         mutableStateOf("")
     }
 
-    var pickingStart by remember {
+    var pickingStart by remember(building.buildingId) {
         mutableStateOf(false)
     }
 
-    var scanning by remember {
+    var scanning by remember(building.buildingId) {
         mutableStateOf(false)
     }
 
-    var diagnostics by remember {
+    var diagnostics by remember(building.buildingId) {
         mutableStateOf(false)
     }
 
-    var confirmFloor by remember {
+    var confirmFloor by remember(building.buildingId) {
         mutableStateOf(false)
     }
 
-    var voice by rememberSaveable {
+    var confirmExit by remember(building.buildingId) {
         mutableStateOf(false)
     }
 
-    var running by remember {
+    var voice by rememberSaveable(building.buildingId) {
         mutableStateOf(false)
+    }
+
+    var running by remember(building.buildingId) {
+        mutableStateOf(false)
+    }
+
+    // Selection in the dialog does not change session state until confirmed.
+    var chosenStartId by remember(building.buildingId) {
+        mutableStateOf<String?>(null)
     }
 
     val currentFloor = session.estimate?.floorId
-    val transferInProgress = session.pendingFloorArrival != null
+    val pendingTarget = session.pendingFloorArrival
+    val transferInProgress = pendingTarget != null
+
+    val floorName = building.floors
+        .firstOrNull { it.floorId == floorId }
+        ?.floorName
+        ?: floorId
+
+    val pendingFloorName = building.floors
+        .firstOrNull { it.floorId == pendingTarget?.floorId }
+        ?.floorName
+        ?: pendingTarget?.floorId.orEmpty()
 
     LaunchedEffect(currentFloor) {
         currentFloor?.let {
@@ -105,17 +132,29 @@ fun MapScreen(
         }
     }
 
-    // A stale arrival dialog must not remain open after its transfer ends.
     LaunchedEffect(transferInProgress) {
         if (!transferInProgress) {
             confirmFloor = false
         }
     }
 
-    val floorName = building.floors
-        .firstOrNull { it.floorId == floorId }
-        ?.floorName
-        ?: floorId
+    fun openStartPicker() {
+        if (session.pendingFloorArrival != null) return
+
+        session.pauseMotion()
+        chosenStartId = session.selectedStartId
+        pickingStart = true
+    }
+
+    fun requestExit() {
+        session.pauseMotion()
+
+        if (session.pendingFloorArrival != null) {
+            confirmExit = true
+        } else {
+            onBack()
+        }
+    }
 
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
@@ -139,13 +178,18 @@ fun MapScreen(
     }
 
     DisposableEffect(context) {
+        var disposed = false
+
         val tts = TextToSpeech(context.applicationContext) { result ->
-            speechReady = result == TextToSpeech.SUCCESS
+            if (!disposed) {
+                speechReady = result == TextToSpeech.SUCCESS
+            }
         }
 
         speech = tts
 
         onDispose {
+            disposed = true
             tts.stop()
             tts.shutdown()
         }
@@ -172,12 +216,11 @@ fun MapScreen(
         }
     }
 
-    // Include pending arrival so guidance changes at both transfer stages.
     val guidanceKey =
         "${session.route?.nodeIds}:" +
                 "${session.nextIndex}:" +
                 "${session.arrived}:" +
-                "${session.pendingFloorArrival?.nodeId}"
+                "${pendingTarget?.nodeId}"
 
     LaunchedEffect(
         voice,
@@ -187,6 +230,7 @@ fun MapScreen(
         diagnostics,
         pickingStart,
         confirmFloor,
+        confirmExit,
         resumed
     ) {
         val canSpeak =
@@ -197,30 +241,39 @@ fun MapScreen(
                     !diagnostics &&
                     !pickingStart &&
                     !confirmFloor &&
+                    !confirmExit &&
                     session.route != null
 
-        if (canSpeak) {
-            val tts = speech
+        val tts = speech
 
-            if (tts != null) {
-                val languageResult =
-                    tts.setLanguage(Locale.getDefault())
+        if (canSpeak && tts != null) {
+            val result = tts.setLanguage(Locale.getDefault())
 
-                if (
-                    languageResult != TextToSpeech.LANG_MISSING_DATA &&
-                    languageResult != TextToSpeech.LANG_NOT_SUPPORTED
-                ) {
-                    tts.speak(
-                        session.instruction,
-                        TextToSpeech.QUEUE_FLUSH,
-                        null,
-                        "intramap-guidance"
-                    )
-                }
+            if (
+                result != TextToSpeech.LANG_MISSING_DATA &&
+                result != TextToSpeech.LANG_NOT_SUPPORTED
+            ) {
+                tts.speak(
+                    session.instruction,
+                    TextToSpeech.QUEUE_FLUSH,
+                    null,
+                    "intramap-guidance"
+                )
             }
         } else {
-            speech?.stop()
+            tts?.stop()
         }
+    }
+
+    BackHandler(
+        enabled =
+            !scanning &&
+                    !pickingStart &&
+                    !diagnostics &&
+                    !confirmFloor &&
+                    !confirmExit
+    ) {
+        requestExit()
     }
 
     if (scanning) {
@@ -273,6 +326,10 @@ fun MapScreen(
                                 "physically there. Confirming resets your position."
                     )
 
+                    if (session.landmarks.isEmpty()) {
+                        Text("This map has no starting landmarks.")
+                    }
+
                     session.landmarks
                         .sortedBy {
                             if (it.floorId == floorId) 0 else 1
@@ -289,16 +346,14 @@ fun MapScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        session.chooseStart(node.nodeId)
+                                        chosenStartId = node.nodeId
                                     }
                                     .padding(vertical = 4.dp)
                             ) {
                                 RadioButton(
-                                    selected =
-                                        session.selectedStartId ==
-                                                node.nodeId,
+                                    selected = chosenStartId == node.nodeId,
                                     onClick = {
-                                        session.chooseStart(node.nodeId)
+                                        chosenStartId = node.nodeId
                                     }
                                 )
 
@@ -322,13 +377,24 @@ fun MapScreen(
             confirmButton = {
                 TextButton(
                     enabled =
-                        session.selectedStartId != null &&
+                        chosenStartId != null &&
+                                session.landmarks.any {
+                                    it.nodeId == chosenStartId
+                                } &&
                                 session.errors.isEmpty() &&
                                 !transferInProgress,
                     onClick = {
-                        session.pauseMotion()
-                        session.confirmStart()
-                        pickingStart = false
+                        val startId = chosenStartId
+
+                        if (
+                            startId != null &&
+                            session.pendingFloorArrival == null
+                        ) {
+                            session.pauseMotion()
+                            session.chooseStart(startId)
+                            session.confirmStart()
+                            pickingStart = false
+                        }
                     }
                 ) {
                     Text("I am here — confirm")
@@ -346,16 +412,7 @@ fun MapScreen(
         )
     }
 
-    if (confirmFloor) {
-        val target = session.pendingFloorArrival
-
-        val targetFloorName = building.floors
-            .firstOrNull {
-                it.floorId == target?.floorId
-            }
-            ?.floorName
-            ?: target?.floorId.orEmpty()
-
+    if (confirmFloor && pendingTarget != null) {
         AlertDialog(
             onDismissRequest = {
                 confirmFloor = false
@@ -365,19 +422,14 @@ fun MapScreen(
             },
             text = {
                 Text(
-                    if (target == null) {
-                        "No floor change is currently in progress."
-                    } else {
-                        "Are you physically on $targetFloorName at " +
-                                "the mapped stairs or elevator landing? " +
-                                "Confirming will reinitialize your position " +
-                                "at that connector."
-                    }
+                    "Are you physically on $pendingFloorName at " +
+                            "the mapped stairs or elevator landing? " +
+                            "Confirming reinitializes your position " +
+                            "at that connector."
                 )
             },
             confirmButton = {
                 TextButton(
-                    enabled = target != null,
                     onClick = {
                         session.confirmTransition()
                         confirmFloor = false
@@ -389,11 +441,50 @@ fun MapScreen(
             dismissButton = {
                 TextButton(
                     onClick = {
-                        // Keep the pending transfer active.
+                        // Dismiss only; the transfer remains pending.
                         confirmFloor = false
                     }
                 ) {
                     Text("Not yet")
+                }
+            }
+        )
+    }
+
+    if (confirmExit) {
+        AlertDialog(
+            onDismissRequest = {
+                confirmExit = false
+            },
+            title = {
+                Text("Leave navigation?")
+            },
+            text = {
+                Text(
+                    "A floor change is in progress. Leaving cancels " +
+                            "that transfer without confirming your arrival. " +
+                            "Confirm your actual location when you return."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        session.cancelFloorTransition()
+                        session.pauseMotion()
+                        confirmExit = false
+                        onBack()
+                    }
+                ) {
+                    Text("Leave navigation")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        confirmExit = false
+                    }
+                ) {
+                    Text("Stay")
                 }
             }
         )
@@ -423,7 +514,8 @@ fun MapScreen(
                     Text(
                         "Ready: ${session.ready}\n" +
                                 "Sensors running: $running\n" +
-                                "Floor: ${session.estimate?.floorId ?: "Unknown"}"
+                                "Estimated floor: " +
+                                "${session.estimate?.floorId ?: "Unknown"}"
                     )
 
                     session.estimate?.let { estimate ->
@@ -481,19 +573,19 @@ fun MapScreen(
                             style = MaterialTheme.typography.titleLarge
                         )
 
+                        val locationText = when {
+                            transferInProgress ->
+                                "Transferring to $pendingFloorName"
+
+                            session.ready ->
+                                "Location initialized"
+
+                            else ->
+                                "Choose your start"
+                        }
+
                         Text(
-                            text = "$floorName · ${
-                                when {
-                                    transferInProgress ->
-                                        "Floor change in progress"
-
-                                    session.ready ->
-                                        "Location initialized"
-
-                                    else ->
-                                        "Choose your start"
-                                }
-                            }",
+                            text = "$floorName · $locationText",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -501,8 +593,7 @@ fun MapScreen(
                 navigationIcon = {
                     TextButton(
                         onClick = {
-                            session.pauseMotion()
-                            onBack()
+                            requestExit()
                         }
                     ) {
                         Text("Back")
@@ -523,7 +614,7 @@ fun MapScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .heightIn(max = 330.dp)
+                        .heightIn(max = 360.dp)
                         .verticalScroll(rememberScrollState())
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -537,13 +628,13 @@ fun MapScreen(
                                 "1. Confirm your starting point"
 
                             transferInProgress ->
-                                session.instruction
-
-                            session.destination == null ->
-                                "2. Choose a destination above"
+                                "Floor change to $pendingFloorName"
 
                             session.arrived ->
                                 "You have arrived"
+
+                            session.destination == null ->
+                                "2. Choose a destination above"
 
                             session.route == null ->
                                 "No available route"
@@ -554,11 +645,6 @@ fun MapScreen(
                         style = MaterialTheme.typography.titleMedium
                     )
 
-                    Text(
-                        text = session.status,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-
                     if (session.errors.isNotEmpty()) {
                         session.errors.forEach { error ->
                             Text(
@@ -567,15 +653,40 @@ fun MapScreen(
                             )
                         }
                     } else if (!session.ready) {
+                        Text(
+                            text = session.status,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+
                         Button(
                             onClick = {
-                                pickingStart = true
+                                openStartPicker()
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Choose and confirm my location")
                         }
                     } else {
+                        // During a transfer, show arrival controls first,
+                        // before optional settings.
+                        if (transferInProgress) {
+                            FloorChangeControls(
+                                session = session,
+                                onConfirmArrival = {
+                                    session.pauseMotion()
+                                    confirmFloor = true
+                                },
+                                onCorrectLocation = {
+                                    openStartPicker()
+                                }
+                            )
+                        }
+
+                        Text(
+                            text = session.status,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+
                         Row(
                             modifier = Modifier.horizontalScroll(
                                 rememberScrollState()
@@ -609,8 +720,7 @@ fun MapScreen(
                             TextButton(
                                 enabled = !transferInProgress,
                                 onClick = {
-                                    session.pauseMotion()
-                                    pickingStart = true
+                                    openStartPicker()
                                 }
                             ) {
                                 Text("Change start")
@@ -627,21 +737,19 @@ fun MapScreen(
                             }
                         }
 
-                        // Handles Auto / Stairs / Elevator and both
-                        // stages of the floor-change workflow.
-                        FloorChangeControls(
-                            session = session,
-                            onConfirmArrival = {
-                                session.pauseMotion()
-                                confirmFloor = true
-                            },
-                            onCorrectLocation = {
-                                session.pauseMotion()
-                                pickingStart = true
-                            }
-                        )
+                        if (!transferInProgress) {
+                            FloorChangeControls(
+                                session = session,
+                                onConfirmArrival = {
+                                    session.pauseMotion()
+                                    confirmFloor = true
+                                },
+                                onCorrectLocation = {
+                                    openStartPicker()
+                                }
+                            )
+                        }
 
-                        // The previous transitionTarget button is removed.
                         if (
                             session.route != null &&
                             !session.arrived &&
@@ -653,6 +761,7 @@ fun MapScreen(
                                         !diagnostics &&
                                                 !pickingStart &&
                                                 !confirmFloor &&
+                                                !confirmExit &&
                                                 session.pendingFloorArrival ==
                                                 null &&
                                                 session.transitionTarget ==
@@ -727,8 +836,9 @@ fun MapScreen(
 
             if (transferInProgress) {
                 Text(
-                    text = "Destination changes are paused until you " +
-                            "finish or cancel the floor change.",
+                    text = "Tracking and destination changes are paused. " +
+                            "Use the arrival controls below after reaching " +
+                            "$pendingFloorName.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -736,12 +846,14 @@ fun MapScreen(
             if (query.isNotBlank() && !transferInProgress) {
                 val searchText = query.trim()
 
-                val results = session.landmarks.filter { node ->
-                    node.name.contains(searchText, true) ||
-                            node.keywords.any { keyword ->
-                                keyword.contains(searchText, true)
-                            }
-                }.take(4)
+                val results = session.landmarks
+                    .filter { node ->
+                        node.name.contains(searchText, true) ||
+                                node.keywords.any { keyword ->
+                                    keyword.contains(searchText, true)
+                                }
+                    }
+                    .take(4)
 
                 if (results.isEmpty()) {
                     Text("No mapped place matches this search.")
@@ -776,7 +888,7 @@ fun MapScreen(
                                 query = ""
 
                                 if (!session.ready) {
-                                    pickingStart = true
+                                    openStartPicker()
                                 }
                             }
                         )
@@ -794,7 +906,7 @@ fun MapScreen(
                     FilterChip(
                         selected = floorId == floor.floorId,
                         onClick = {
-                            // Changes the displayed floor only.
+                            // Browsing a floor does not change location.
                             floorId = floor.floorId
                         },
                         label = {
@@ -819,9 +931,8 @@ fun MapScreen(
             }
 
             Text(
-                text =
-                    "Pinch to zoom · Drag to pan · " +
-                            "Blue: route / position · Red: destination",
+                text = "Pinch to zoom · Drag to pan · " +
+                        "Blue: route / position · Red: destination",
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
@@ -872,6 +983,8 @@ private fun NavigationMapCanvas(
             }
     ) {
         if (
+            !floor.widthM.isFinite() ||
+            !floor.heightM.isFinite() ||
             floor.widthM <= 0f ||
             floor.heightM <= 0f ||
             size.minDimension <= 0f
@@ -940,27 +1053,29 @@ private fun NavigationMapCanvas(
             }
         }
 
-        // Never join route coordinates from different floors.
-        session.routeNodes.zipWithNext().forEach { (from, to) ->
-            if (
-                from.floorId == floorId &&
-                to.floorId == floorId
-            ) {
-                drawLine(
-                    color = Color(0xFF2563EB),
-                    start = point(
-                        from.x.toDouble(),
-                        from.y.toDouble()
-                    ),
-                    end = point(
-                        to.x.toDouble(),
-                        to.y.toDouble()
-                    ),
-                    strokeWidth = 5.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
+        // Render only segments belonging to this displayed floor.
+        session.routeNodes
+            .zipWithNext()
+            .forEach { (from, to) ->
+                if (
+                    from.floorId == floorId &&
+                    to.floorId == floorId
+                ) {
+                    drawLine(
+                        color = Color(0xFF2563EB),
+                        start = point(
+                            from.x.toDouble(),
+                            from.y.toDouble()
+                        ),
+                        end = point(
+                            to.x.toDouble(),
+                            to.y.toDouble()
+                        ),
+                        strokeWidth = 5.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                }
             }
-        }
 
         labelPaint.textSize = 11.dp.toPx()
 
@@ -997,7 +1112,9 @@ private fun NavigationMapCanvas(
 
         session.estimate
             ?.takeIf {
-                it.floorId == floorId
+                it.floorId == floorId &&
+                        it.x.isFinite() &&
+                        it.y.isFinite()
             }
             ?.let { estimate ->
                 val center = point(
@@ -1005,17 +1122,23 @@ private fun NavigationMapCanvas(
                     estimate.y
                 )
 
-                drawCircle(
-                    color = Color(0x222563EB),
-                    radius = (
-                            estimate.spreadM.toFloat() * scale
-                            ).coerceIn(
+                val spreadRadius =
+                    estimate.spreadM.toFloat() * scale
+
+                if (
+                    spreadRadius.isFinite() &&
+                    spreadRadius >= 0f
+                ) {
+                    drawCircle(
+                        color = Color(0x222563EB),
+                        radius = spreadRadius.coerceIn(
                             minimumValue = 1f,
                             maximumValue =
                                 size.maxDimension.coerceAtLeast(1f)
                         ),
-                    center = center
-                )
+                        center = center
+                    )
+                }
 
                 drawCircle(
                     color = Color.White,
