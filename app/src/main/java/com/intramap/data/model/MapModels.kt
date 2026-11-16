@@ -29,3 +29,10 @@ import kotlinx.serialization.Serializable
     val buildingId: String, val buildingName: String, val description: String = "",
     val floors: List<Floor>, val nodes: List<LocationNode>, val edges: List<PathEdge>
 )
+
+/** A visitor-facing map plus the published version that produced it. */
+@Serializable
+data class PublishedMap(
+    val building: Building,
+    val versionId: String? = null
+)

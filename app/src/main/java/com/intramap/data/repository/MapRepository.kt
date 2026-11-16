@@ -2,6 +2,7 @@ package com.intramap.data.repository
 
 import android.content.Context
 import com.intramap.data.model.Building
+import com.intramap.data.model.PublishedMap
 import com.intramap.data.supabase.SupabaseClientFactory
 import com.intramap.data.supabase.SupabaseMapDataSource
 import kotlinx.serialization.json.Json
@@ -18,11 +19,15 @@ class MapRepository(
         json = json
     )
 
-    private var cache: List<Building>? = null
+    private var cache: List<PublishedMap>? = null
 
-    fun getBuildings(): List<Building> = cache ?: loadLocal().also { cache = it }
+    fun getBuildings(): List<Building> = getPublishedMaps().map { it.building }
 
-    fun getBuilding(id: String): Building? = getBuildings().firstOrNull { it.buildingId == id }
+    fun getBuilding(id: String): Building? =
+        getPublishedMaps().firstOrNull { it.building.buildingId == id }?.building
+
+    fun getPublishedMap(id: String): PublishedMap? =
+        getPublishedMaps().firstOrNull { it.building.buildingId == id }
 
     /**
      * Refreshes published maps from Supabase when configured and reachable.
@@ -33,31 +38,35 @@ class MapRepository(
             ?: return Result.failure(IllegalStateException("Supabase is not configured."))
 
         return runCatching {
-            val remoteBuildings = remote.fetchPublishedBuildings()
-            offlineCache.save(remoteBuildings)
+            val remoteMaps = remote.fetchPublishedMaps()
+            offlineCache.save(remoteMaps)
             cache = loadLocal()
-            remoteBuildings.size
+            remoteMaps.size
         }
     }
 
-    private fun loadLocal(): List<Building> {
+    private fun getPublishedMaps(): List<PublishedMap> =
+        cache ?: loadLocal().also { cache = it }
+
+    private fun loadLocal(): List<PublishedMap> {
         val bundled = loadBundledMaps()
         val cached = offlineCache.load()
 
         return (bundled + cached)
-            .associateBy { it.buildingId }
+            .associateBy { it.building.buildingId }
             .values
-            .sortedBy { it.buildingName.lowercase() }
+            .sortedBy { it.building.buildingName.lowercase() }
     }
 
-    private fun loadBundledMaps(): List<Building> {
+    private fun loadBundledMaps(): List<PublishedMap> {
         val files = context.assets.list("maps").orEmpty().filter { it.endsWith(".json") }
 
         return files.mapNotNull { fileName ->
             runCatching {
-                json.decodeFromString<Building>(
+                val building = json.decodeFromString<Building>(
                     context.assets.open("maps/$fileName").bufferedReader().use { it.readText() }
                 )
+                PublishedMap(building)
             }.getOrNull()
         }
     }

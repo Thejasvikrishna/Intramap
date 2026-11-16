@@ -31,11 +31,13 @@ internal fun projectPoint(x: Double, y: Double, a: LocationNode, b: LocationNode
     val py = a.y + t * dy
     return Projection(px, py, t, hypot(x - px, y - py))
 }
+
 enum class FloorTravelMode {
     AUTO,
     STAIRS,
     ELEVATOR
 }
+
 class NavigationSession(
     val building: Building,
     private val nowMs: () -> Long = { SystemClock.elapsedRealtime() }
@@ -64,6 +66,7 @@ class NavigationSession(
         floorTravelMode = mode
         reroute("Floor travel preference updated.")
     }
+
     val errors = validateNavigationMap(building)
     val landmarks = building.nodes.filter { it.type != "JUNCTION" }
     private val nodes = building.nodes.associateBy { it.nodeId }
@@ -110,6 +113,7 @@ class NavigationSession(
     val ready: Boolean get() = estimate != null && errors.isEmpty()
     val destination: LocationNode? get() = nodes[destinationId]
     val nextNode: LocationNode? get() = routeNodes.getOrNull(nextIndex)
+
     val instruction: String get() {
         if (arrived) return "Arrived at ${destination?.name.orEmpty()}."
         pendingFloorArrival?.let { target ->
@@ -143,11 +147,19 @@ class NavigationSession(
         return "$generated\nNext: ${n.name}, approximately %.1f m away.".format(distance(e, n))
     }
 
-    fun chooseStart(id: String) { if (id in nodes) selectedStartId = id }
+    fun chooseStart(id: String) {
+        if (id in nodes) selectedStartId = id
+    }
 
     fun confirmStart() {
-        val id = selectedStartId ?: run { status = "Choose a starting landmark first."; return }
-        if (errors.isNotEmpty()) { status = errors.joinToString("\n"); return }
+        val id = selectedStartId ?: run {
+            status = "Choose a starting landmark first."
+            return
+        }
+        if (errors.isNotEmpty()) {
+            status = errors.joinToString("\n")
+            return
+        }
         motionEpoch++
         engine.reset(id)
         componentAnchorId = id
@@ -181,6 +193,7 @@ class NavigationSession(
 
         reroute("Accessibility preference updated.")
     }
+
     fun beginFloorTransition() {
         val target = transitionTarget ?: run {
             status =
@@ -210,12 +223,15 @@ class NavigationSession(
             "Floor change cancelled. Position remains on the previous floor. " +
                     "If you have moved floors, explicitly confirm your actual location."
     }
+
     fun clearBlocked() {
         blocked = emptySet()
         reroute("Local blocked-path reports cleared.")
     }
 
-    fun pauseMotion() { motionEpoch++ }
+    fun pauseMotion() {
+        motionEpoch++
+    }
 
     fun walk(lengthM: Double, headingDeg: Double) {
         if (!ready || arrived || pendingFloorArrivalId != null) return
@@ -234,11 +250,15 @@ class NavigationSession(
     }
 
     fun applyObservation(observation: CameraLandmarkObservation): Boolean {
-        if (!ready) { status = "Confirm a starting location first."; return false }
+        if (!ready) {
+            status = "Confirm a starting location first."
+            return false
+        }
         val n = nodes[observation.nodeId]
         val age = nowMs() - observation.capturedAtElapsedMs
         if (n == null || n.floorId != observation.floorId || observation.observedText.isBlank() ||
-            observation.matchingScans < 2 || observation.capturedAtElapsedMs < 0L || age !in 0L..30_000L) {
+            observation.matchingScans < 2 || observation.capturedAtElapsedMs < 0L || age !in 0L..30_000L
+        ) {
             status = "Rejected camera result: invalid landmark, floor, text, consistency or timestamp."
             return false
         }
@@ -251,14 +271,47 @@ class NavigationSession(
         return update.accepted
     }
 
+    fun applyReferencePose(
+        floorId: String,
+        x: Double,
+        y: Double,
+        headingDeg: Double
+    ): Boolean {
+        if (!x.isFinite() || !y.isFinite() || !headingDeg.isFinite()) {
+            status = "Rejected reference pose: invalid geometry."
+            return false
+        }
+
+        if (errors.isNotEmpty()) {
+            status = errors.joinToString("\n")
+            return false
+        }
+
+        val update = engine.relocalize(floorId, x, y)
+
+        if (!update.accepted) {
+            status = update.message
+            return false
+        }
+
+        refresh()
+        componentAnchorId = update.anchorNodeId
+        arrived = false
+        pendingFloorArrivalId = null
+        restoredNote = null
+
+        reroute("Reference pose accepted. Route recalculated from your scanned position.")
+        return true
+    }
+
     val transitionTarget: LocationNode? get() {
         val e = estimate ?: return null
         val n = nextNode ?: return null
         val source = routeNodes.getOrNull(nextIndex - 1) ?: return null
         return n.takeIf {
             it.floorId != e.floorId && source.floorId == e.floorId &&
-                source.type in setOf("STAIRS", "ELEVATOR") && source.type == it.type &&
-                distance(e, source) <= 2.0 && e.spreadM <= 2.0
+                    source.type in setOf("STAIRS", "ELEVATOR") && source.type == it.type &&
+                    distance(e, source) <= 2.0 && e.spreadM <= 2.0
         }
     }
 
@@ -321,8 +374,14 @@ class NavigationSession(
         offRouteCount = 0
         matchedDistanceM = null
         splitToOriginal = emptyMap()
-        val e = estimate ?: run { status = "$message Confirm your starting position."; return }
-        val goal = destinationId ?: run { status = "$message Choose a destination."; return }
+        val e = estimate ?: run {
+            status = "$message Confirm your starting position."
+            return
+        }
+        val goal = destinationId ?: run {
+            status = "$message Choose a destination."
+            return
+        }
         val component = mutableSetOf<String>()
         val queue = java.util.ArrayDeque<String>()
         componentAnchorId?.let { component.add(it); queue.add(it) }
@@ -386,15 +445,24 @@ class NavigationSession(
             matchedDistanceM = distance(e, closeNode)
         } else if (nearest != null && nearest.second.distance <= 2.0) {
             val (edge, p) = nearest
-            val anchor = LocationNode("__nav_position", e.floorId, "Current position", "JUNCTION", p.x.toFloat(), p.y.toFloat())
-            val aEdge = PathEdge("__nav_a", edge.sourceNodeId, anchor.nodeId,
-                (edge.distance * p.t).toFloat(), edge.accessibilityType)
-            val bEdge = PathEdge("__nav_b", anchor.nodeId, edge.destinationNodeId,
-                (edge.distance * (1.0 - p.t)).toFloat(), edge.accessibilityType)
-            graph = IndoorGraph(building.copy(
-                nodes = building.nodes + anchor,
-                edges = allowed.filterNot { it.edgeId == edge.edgeId } + listOf(aEdge, bEdge)
-            ))
+            val anchor = LocationNode(
+                "__nav_position", e.floorId, "Current position", "JUNCTION",
+                p.x.toFloat(), p.y.toFloat()
+            )
+            val aEdge = PathEdge(
+                "__nav_a", edge.sourceNodeId, anchor.nodeId,
+                (edge.distance * p.t).toFloat(), edge.accessibilityType
+            )
+            val bEdge = PathEdge(
+                "__nav_b", anchor.nodeId, edge.destinationNodeId,
+                (edge.distance * (1.0 - p.t)).toFloat(), edge.accessibilityType
+            )
+            graph = IndoorGraph(
+                building.copy(
+                    nodes = building.nodes + anchor,
+                    edges = allowed.filterNot { it.edgeId == edge.edgeId } + listOf(aEdge, bEdge)
+                )
+            )
             startId = anchor.nodeId
             splitToOriginal = mapOf(aEdge.edgeId to edge.edgeId, bEdge.edgeId to edge.edgeId)
             matchedDistanceM = p.distance
@@ -402,10 +470,15 @@ class NavigationSession(
             status = "$message Cannot safely associate position with an available path. Scan or confirm your location."
             return
         }
-        val r = findRoute(graph, startId, goal,
+        val r = findRoute(
+            graph, startId, goal,
             if (stepFree) AccessibilityMode.STEP_FREE else AccessibilityMode.STANDARD,
-            useAStar = false)
-        if (r == null) { status = "$message No available route for these preferences."; return }
+            useAStar = false
+        )
+        if (r == null) {
+            status = "$message No available route for these preferences."
+            return
+        }
         route = r
         routeNodes = r.nodeIds.map { graph.nodes.getValue(it) }
         instructions = generateInstructions(graph, r, building.floors.associate { it.floorId to it.floorName })
@@ -431,7 +504,8 @@ class NavigationSession(
         val dest = destination
         val reachedLast = nextIndex == routeNodes.lastIndex
         if (dest != null && reachedLast && dest.floorId == e.floorId &&
-            distance(e, dest) <= 1.5 && e.spreadM <= 2.0) arrivalCount++ else arrivalCount = 0
+            distance(e, dest) <= 1.5 && e.spreadM <= 2.0
+        ) arrivalCount++ else arrivalCount = 0
         if (arrivalCount >= 3) {
             arrived = true
             status = "Estimated arrival at ${dest?.name}. Verify the destination sign."

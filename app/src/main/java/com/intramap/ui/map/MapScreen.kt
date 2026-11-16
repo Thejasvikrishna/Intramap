@@ -1,12 +1,9 @@
 package com.intramap.ui.map
 
-import android.graphics.Paint
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -16,26 +13,26 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.intramap.data.model.Building
+import com.intramap.data.model.LocationNode
 import com.intramap.navigation.NavigationSession
+import com.intramap.ui.navigation.ArPoseResult
 import com.intramap.ui.navigation.FloorChangeControls
 import com.intramap.ui.navigation.NavigationMotionControls
 import com.intramap.ui.vision.LandmarkScannerScreen
 import java.util.Locale
-import kotlin.math.min
+import kotlin.math.hypot
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Suppress("UNUSED_PARAMETER")
@@ -43,151 +40,416 @@ import kotlin.math.min
 fun MapScreen(
     building: Building,
     initialFloorId: String,
+    versionId: String? = null,
+    pendingArPose: ArPoseResult.Pose? = null,
+    onArPoseConsumed: () -> Unit = {},
+    onOpenArPositioning: () -> Unit = {},
     onBack: () -> Unit,
     onOpenDiagnostics: () -> Unit = {}
 ) {
     val saver = remember(building) {
         Saver<NavigationSession, Bundle>(
-            save = { session ->
-                session.snapshot()
-            },
-            restore = { saved ->
-                NavigationSession(building).apply {
-                    restore(saved)
-                }
-            }
+            save = { it.snapshot() },
+            restore = { bundle -> NavigationSession(building).apply { restore(bundle) } }
         )
     }
+    val session = rememberSaveable(building.buildingId, saver = saver) { NavigationSession(building) }
+    var floorId by rememberSaveable(building.buildingId) { mutableStateOf(initialFloorId) }
+    var query by rememberSaveable(building.buildingId) { mutableStateOf("") }
+    var pickingStart by remember { mutableStateOf(false) }
+    var selectedStart by remember { mutableStateOf<String?>(null) }
+    var scanning by remember { mutableStateOf(false) }
+    var details by remember { mutableStateOf(false) }
+    var options by remember { mutableStateOf(false) }
+    var confirmFloor by remember { mutableStateOf(false) }
+    var confirmExit by remember { mutableStateOf(false) }
+    var voice by rememberSaveable { mutableStateOf(false) }
+    var following by rememberSaveable { mutableStateOf(true) }
+    var recenter by remember { mutableIntStateOf(0) }
+    var running by remember { mutableStateOf(false) }
+    var topHeight by remember { mutableIntStateOf(0) }
+    var bottomHeight by remember { mutableIntStateOf(0) }
+    val estimate = session.estimate
+    val transfer = session.pendingFloorArrival
+    val floorName = building.floors.firstOrNull { it.floorId == floorId }?.floorName ?: floorId
+    val density = LocalDensity.current
+    val maxCardHeight = (LocalConfiguration.current.screenHeightDp * 0.44f).dp
+    val paused = scanning || pickingStart || details || confirmFloor || confirmExit
 
-    val session = rememberSaveable(
-        building.buildingId,
-        saver = saver
-    ) {
-        NavigationSession(building)
-    }
+    LaunchedEffect(estimate?.floorId) { estimate?.let { floorId = it.floorId } }
+    LaunchedEffect(transfer?.nodeId) { if (transfer == null) confirmFloor = false }
+    LaunchedEffect(paused) { if (paused) session.pauseMotion() }
 
-    val initialDisplayFloor = building.floors
-        .firstOrNull { it.floorId == initialFloorId }
-        ?.floorId
-        ?: building.floors.firstOrNull()?.floorId.orEmpty()
-
-    var floorId by rememberSaveable(building.buildingId) {
-        mutableStateOf(initialDisplayFloor)
-    }
-
-    var query by rememberSaveable(building.buildingId) {
-        mutableStateOf("")
-    }
-
-    var pickingStart by remember(building.buildingId) {
-        mutableStateOf(false)
-    }
-
-    var scanning by remember(building.buildingId) {
-        mutableStateOf(false)
-    }
-
-    var diagnostics by remember(building.buildingId) {
-        mutableStateOf(false)
-    }
-
-    var confirmFloor by remember(building.buildingId) {
-        mutableStateOf(false)
-    }
-
-    var confirmExit by remember(building.buildingId) {
-        mutableStateOf(false)
-    }
-
-    var voice by rememberSaveable(building.buildingId) {
-        mutableStateOf(false)
-    }
-
-    var running by remember(building.buildingId) {
-        mutableStateOf(false)
-    }
-
-    // Selection in the dialog does not change session state until confirmed.
-    var chosenStartId by remember(building.buildingId) {
-        mutableStateOf<String?>(null)
-    }
-
-    val currentFloor = session.estimate?.floorId
-    val pendingTarget = session.pendingFloorArrival
-    val transferInProgress = pendingTarget != null
-
-    val floorName = building.floors
-        .firstOrNull { it.floorId == floorId }
-        ?.floorName
-        ?: floorId
-
-    val pendingFloorName = building.floors
-        .firstOrNull { it.floorId == pendingTarget?.floorId }
-        ?.floorName
-        ?: pendingTarget?.floorId.orEmpty()
-
-    LaunchedEffect(currentFloor) {
-        currentFloor?.let {
-            floorId = it
+    LaunchedEffect(pendingArPose) {
+        val pose = pendingArPose ?: return@LaunchedEffect
+        if (session.pendingFloorArrival == null) {
+            session.applyReferencePose(pose.floorId, pose.x, pose.y, pose.headingDeg)
         }
+        onArPoseConsumed()
     }
 
-    LaunchedEffect(transferInProgress) {
-        if (!transferInProgress) {
-            confirmFloor = false
-        }
-    }
+    val spokenInstruction = remember(
+        session.route?.nodeIds,
+        session.nextIndex,
+        session.arrived,
+        transfer?.nodeId
+    ) { session.instruction }
+    MapVoiceGuidance(voice && session.route != null, spokenInstruction, paused)
 
-    fun openStartPicker() {
-        if (session.pendingFloorArrival != null) return
-
+    fun chooseStart() {
         session.pauseMotion()
-        chosenStartId = session.selectedStartId
+        selectedStart = session.selectedStartId
         pickingStart = true
     }
 
-    fun requestExit() {
+    fun leave() {
         session.pauseMotion()
-
-        if (session.pendingFloorArrival != null) {
-            confirmExit = true
-        } else {
-            onBack()
-        }
+        if (transfer != null) confirmExit = true else onBack()
     }
 
-    val context = LocalContext.current
-    val owner = LocalLifecycleOwner.current
-
-    var speech by remember {
-        mutableStateOf<TextToSpeech?>(null)
+    fun destination(node: LocationNode) {
+        if (session.pendingFloorArrival != null) return
+        session.pauseMotion()
+        session.setDestination(node.nodeId)
+        query = ""
+        if (!session.ready) chooseStart()
     }
 
-    val currentSpeech by rememberUpdatedState(speech)
+    BackHandler(enabled = !paused) { leave() }
 
-    var speechReady by remember {
-        mutableStateOf(false)
-    }
-
-    var resumed by remember(owner) {
-        mutableStateOf(
-            owner.lifecycle.currentState.isAtLeast(
-                Lifecycle.State.RESUMED
+    if (scanning) {
+        val scannerBuilding = remember(building, estimate?.floorId) {
+            building.copy(
+                floors = building.floors.sortedBy {
+                    if (it.floorId == estimate?.floorId) 0 else 1
+                }
             )
+        }
+        LandmarkScannerScreen(
+            building = scannerBuilding,
+            onBack = { scanning = false },
+            onUseObservation = {
+                if (session.pendingFloorArrival == null) session.applyObservation(it)
+                scanning = false
+            }
+        )
+        return
+    }
+
+    if (pickingStart) {
+        AlertDialog(
+            onDismissRequest = { pickingStart = false },
+            title = { Text("Confirm your actual location") },
+            text = {
+                Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState())) {
+                    Text("Choose a landmark only if you are physically there. This initializes an estimate, not an automatic location fix.")
+                    session.landmarks.sortedBy { if (it.floorId == floorId) 0 else 1 }.forEach { node ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { selectedStart = node.nodeId }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selectedStart == node.nodeId, onClick = { selectedStart = node.nodeId })
+                            Column {
+                                Text(node.name)
+                                Text(building.floors.firstOrNull { it.floorId == node.floorId }?.floorName ?: node.floorId)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = selectedStart != null && session.errors.isEmpty() && transfer == null,
+                    onClick = {
+                        selectedStart?.let {
+                            session.chooseStart(it)
+                            session.confirmStart()
+                        }
+                        pickingStart = false
+                        following = true
+                        recenter++
+                    }
+                ) { Text("I am here") }
+            },
+            dismissButton = { TextButton(onClick = { pickingStart = false }) { Text("Cancel") } }
         )
     }
 
-    DisposableEffect(context) {
-        var disposed = false
+    if (confirmFloor && transfer != null) {
+        val targetName = building.floors.firstOrNull { it.floorId == transfer.floorId }?.floorName ?: transfer.floorId
+        AlertDialog(
+            onDismissRequest = { confirmFloor = false },
+            title = { Text("Arrived on $targetName?") },
+            text = {
+                Text("Confirm only after physically reaching the mapped ${transfer.type.lowercase()} landing. Position will be reinitialized there.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    session.confirmTransition()
+                    confirmFloor = false
+                    following = true
+                    recenter++
+                }) { Text("Confirm arrival") }
+            },
+            dismissButton = { TextButton(onClick = { confirmFloor = false }) { Text("Not yet") } }
+        )
+    }
 
-        val tts = TextToSpeech(context.applicationContext) { result ->
-            if (!disposed) {
-                speechReady = result == TextToSpeech.SUCCESS
+    if (confirmExit) {
+        AlertDialog(
+            onDismissRequest = { confirmExit = false },
+            title = { Text("Leave navigation?") },
+            text = { Text("A floor change is pending. Leaving cancels it without confirming your arrival.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    session.cancelFloorTransition()
+                    confirmExit = false
+                    onBack()
+                }) { Text("Leave") }
+            },
+            dismissButton = { TextButton(onClick = { confirmExit = false }) { Text("Stay") } }
+        )
+    }
+
+    if (details) {
+        AlertDialog(
+            onDismissRequest = { details = false },
+            title = { Text("Navigation session") },
+            text = {
+                Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                    Text("Sensors running: $running")
+                    Text("Floor: ${estimate?.floorId ?: "Unknown"}")
+                    estimate?.let {
+                        Text("Estimated position: %.1f, %.1f m\nSpread: %.1f m".format(it.x, it.y, it.spreadM))
+                    }
+                    Text("Destination: ${session.destination?.name ?: "None"}")
+                    Text("Route nodes: ${session.routeNodes.size}; next index: ${session.nextIndex}")
+                    Text(session.status)
+                    session.errors.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { details = false }) { Text("Close") } }
+        )
+    }
+
+    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+        InteractiveIndoorMap(
+            building = building,
+            floorId = floorId,
+            route = session.routeNodes,
+            destinationId = session.destinationId,
+            position = estimate?.takeIf { it.floorId == floorId }?.let {
+                Offset(it.x.toFloat(), it.y.toFloat())
+            },
+            spreadM = estimate?.spreadM,
+            blocked = session.blocked,
+            follow = following,
+            recenterToken = recenter,
+            topInsetPx = topHeight.toFloat(),
+            bottomInsetPx = bottomHeight.toFloat(),
+            onGesture = { following = false },
+            onPlace = { destination(it) },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        Column(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth()
+                .onSizeChanged { topHeight = it.height }.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Surface(shape = RoundedCornerShape(24.dp), shadowElevation = 6.dp) {
+                Column(Modifier.padding(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { leave() }) { Text("Back") }
+                        Column(Modifier.weight(1f)) {
+                            Text(building.buildingName, style = MaterialTheme.typography.titleMedium)
+                            Text(floorName, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    OutlinedTextField(
+                        query,
+                        { query = it },
+                        enabled = transfer == null,
+                        singleLine = true,
+                        label = { Text("Where do you want to go?") },
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (query.isNotBlank() && transfer == null) {
+                        val text = query.trim()
+                        val results = session.landmarks.filter {
+                            it.name.contains(text, true) || it.keywords.any { word -> word.contains(text, true) }
+                        }.take(5)
+                        Column(Modifier.heightIn(max = 180.dp).verticalScroll(rememberScrollState())) {
+                            if (results.isEmpty()) Text("No mapped place found.", Modifier.padding(8.dp))
+                            results.forEach { node ->
+                                ListItem(
+                                    headlineContent = { Text(node.name) },
+                                    supportingContent = {
+                                        Text(building.floors.firstOrNull { it.floorId == node.floorId }?.floorName ?: node.floorId)
+                                    },
+                                    modifier = Modifier.clickable { destination(node) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                building.floors.forEach { floor ->
+                    FilterChip(
+                        selected = floorId == floor.floorId,
+                        onClick = { floorId = floor.floorId; following = false },
+                        label = { Text(floor.floorName) }
+                    )
+                }
             }
         }
 
-        speech = tts
+        SmallFloatingActionButton(
+            onClick = {
+                estimate?.let { floorId = it.floorId }
+                following = true
+                recenter++
+            },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(
+                end = 16.dp,
+                bottom = with(density) { bottomHeight.toDp() } + 12.dp
+            )
+        ) { Text("Recenter", Modifier.padding(horizontal = 10.dp)) }
 
+        Surface(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .onSizeChanged { bottomHeight = it.height },
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            shadowElevation = 10.dp,
+            tonalElevation = 3.dp
+        ) {
+            Column(
+                Modifier.heightIn(max = maxCardHeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    when {
+                        session.errors.isNotEmpty() -> "Map needs correction"
+                        !session.ready -> "Set your starting location"
+                        session.arrived -> "You have arrived"
+                        transfer != null -> session.instruction
+                        session.destination == null -> "Search for a destination"
+                        else -> session.instruction
+                    },
+                    style = MaterialTheme.typography.titleMedium
+                )
+                val next = session.nextNode
+                if (estimate != null && next != null && next.floorId == estimate.floorId && !session.arrived) {
+                    Text(
+                        "Approximately %.1f m to next waypoint".format(hypot(next.x - estimate.x, next.y - estimate.y)),
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+                Text(
+                    if (session.ready) "Estimated position · scan a mapped sign if uncertain" else session.status,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (session.ready) Text(session.status, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                if (!session.ready) {
+                    Button(
+                        enabled = session.errors.isEmpty() && transfer == null,
+                        onClick = { chooseStart() }
+                    ) { Text("Confirm my location") }
+                }
+                if (session.ready && (options || transfer != null || (next != null && next.floorId != estimate?.floorId))) {
+                    FloorChangeControls(
+                        session,
+                        onConfirmArrival = { session.pauseMotion(); confirmFloor = true },
+                        onCorrectLocation = { if (transfer == null) chooseStart() }
+                    )
+                }
+                if (session.ready && session.route != null && !session.arrived && transfer == null) {
+                    key(session.motionEpoch) {
+                        NavigationMotionControls(
+                            enabled = !paused && session.transitionTarget == null,
+                            onStep = session::walk,
+                            onRunningChanged = { running = it }
+                        )
+                    }
+                }
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = session.stepFree,
+                        enabled = transfer == null,
+                        onClick = { session.updateAccessibilityPreference(!session.stepFree) },
+                        label = { Text("Step-free") }
+                    )
+                    FilterChip(
+                        selected = voice,
+                        onClick = { voice = !voice },
+                        label = { Text("Voice") }
+                    )
+                    TextButton(onClick = { options = !options }) {
+                        Text(if (options) "Less" else "Options")
+                    }
+                }
+                if (options) {
+                    Row(Modifier.horizontalScroll(rememberScrollState())) {
+                        TextButton(
+                            enabled = versionId != null && transfer == null,
+                            onClick = {
+                                session.pauseMotion()
+                                onOpenArPositioning()
+                            }
+                        ) { Text("AR position") }
+                        TextButton(
+                            enabled = session.ready && transfer == null,
+                            onClick = { session.pauseMotion(); scanning = true }
+                        ) { Text("Scan sign") }
+                        TextButton(
+                            enabled = transfer == null,
+                            onClick = { chooseStart() }
+                        ) { Text("Change start") }
+                        TextButton(onClick = { session.pauseMotion(); details = true }) { Text("Session details") }
+                        TextButton(
+                            enabled = session.route != null && !session.arrived && transfer == null,
+                            onClick = {
+                                session.pauseMotion()
+                                session.reportBlocked()
+                            }
+                        ) { Text("Blocked path") }
+                    }
+                }
+                if (session.errors.isNotEmpty()) {
+                    session.errors.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MapVoiceGuidance(enabled: Boolean, instruction: String, paused: Boolean) {
+    val context = LocalContext.current
+    val owner = LocalLifecycleOwner.current
+    var ready by remember { mutableStateOf(false) }
+    var speech by remember { mutableStateOf<TextToSpeech?>(null) }
+    var resumed by remember(owner) {
+        mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
+    val currentSpeech by rememberUpdatedState(speech)
+
+    DisposableEffect(context) {
+        var disposed = false
+        val tts = TextToSpeech(context.applicationContext) { result ->
+            if (!disposed) ready = result == TextToSpeech.SUCCESS
+        }
+        speech = tts
         onDispose {
             disposed = true
             tts.stop()
@@ -196,961 +458,21 @@ fun MapScreen(
     }
 
     DisposableEffect(owner) {
-        val observer = LifecycleEventObserver { _, event ->
-            resumed = owner.lifecycle.currentState.isAtLeast(
-                Lifecycle.State.RESUMED
-            )
-
-            if (
-                event == Lifecycle.Event.ON_PAUSE ||
-                event == Lifecycle.Event.ON_STOP
-            ) {
-                currentSpeech?.stop()
-            }
+        val observer = LifecycleEventObserver { _, _ ->
+            resumed = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            if (!resumed) currentSpeech?.stop()
         }
-
         owner.lifecycle.addObserver(observer)
-
-        onDispose {
-            owner.lifecycle.removeObserver(observer)
-        }
+        onDispose { owner.lifecycle.removeObserver(observer) }
     }
 
-    val guidanceKey =
-        "${session.route?.nodeIds}:" +
-                "${session.nextIndex}:" +
-                "${session.arrived}:" +
-                "${pendingTarget?.nodeId}"
-
-    LaunchedEffect(
-        voice,
-        speechReady,
-        guidanceKey,
-        scanning,
-        diagnostics,
-        pickingStart,
-        confirmFloor,
-        confirmExit,
-        resumed
-    ) {
-        val canSpeak =
-            voice &&
-                    speechReady &&
-                    resumed &&
-                    !scanning &&
-                    !diagnostics &&
-                    !pickingStart &&
-                    !confirmFloor &&
-                    !confirmExit &&
-                    session.route != null
-
+    LaunchedEffect(enabled, instruction, paused, resumed, ready) {
         val tts = speech
-
-        if (canSpeak && tts != null) {
-            val result = tts.setLanguage(Locale.getDefault())
-
-            if (
-                result != TextToSpeech.LANG_MISSING_DATA &&
-                result != TextToSpeech.LANG_NOT_SUPPORTED
-            ) {
-                tts.speak(
-                    session.instruction,
-                    TextToSpeech.QUEUE_FLUSH,
-                    null,
-                    "intramap-guidance"
-                )
+        if (enabled && !paused && resumed && ready && tts != null) {
+            val language = tts.setLanguage(Locale.getDefault())
+            if (language != TextToSpeech.LANG_MISSING_DATA && language != TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.speak(instruction, TextToSpeech.QUEUE_FLUSH, null, "intramap-guidance")
             }
-        } else {
-            tts?.stop()
-        }
-    }
-
-    BackHandler(
-        enabled =
-            !scanning &&
-                    !pickingStart &&
-                    !diagnostics &&
-                    !confirmFloor &&
-                    !confirmExit
-    ) {
-        requestExit()
-    }
-
-    if (scanning) {
-        BackHandler {
-            scanning = false
-        }
-
-        val scannerBuilding = remember(building, currentFloor) {
-            building.copy(
-                floors = building.floors.sortedBy {
-                    if (it.floorId == currentFloor) 0 else 1
-                }
-            )
-        }
-
-        LandmarkScannerScreen(
-            building = scannerBuilding,
-            onBack = {
-                scanning = false
-            },
-            onUseObservation = { observation ->
-                if (session.pendingFloorArrival == null) {
-                    session.applyObservation(observation)
-                }
-
-                scanning = false
-            }
-        )
-
-        return
-    }
-
-    if (pickingStart) {
-        AlertDialog(
-            onDismissRequest = {
-                pickingStart = false
-            },
-            title = {
-                Text("Where are you standing?")
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        "Select a mapped landmark only if you are " +
-                                "physically there. Confirming resets your position."
-                    )
-
-                    if (session.landmarks.isEmpty()) {
-                        Text("This map has no starting landmarks.")
-                    }
-
-                    session.landmarks
-                        .sortedBy {
-                            if (it.floorId == floorId) 0 else 1
-                        }
-                        .forEach { node ->
-                            val nodeFloorName = building.floors
-                                .firstOrNull {
-                                    it.floorId == node.floorId
-                                }
-                                ?.floorName
-                                ?: node.floorId
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        chosenStartId = node.nodeId
-                                    }
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                RadioButton(
-                                    selected = chosenStartId == node.nodeId,
-                                    onClick = {
-                                        chosenStartId = node.nodeId
-                                    }
-                                )
-
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(top = 10.dp)
-                                ) {
-                                    Text(node.name)
-
-                                    Text(
-                                        text = nodeFloorName,
-                                        style =
-                                            MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                            }
-                        }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled =
-                        chosenStartId != null &&
-                                session.landmarks.any {
-                                    it.nodeId == chosenStartId
-                                } &&
-                                session.errors.isEmpty() &&
-                                !transferInProgress,
-                    onClick = {
-                        val startId = chosenStartId
-
-                        if (
-                            startId != null &&
-                            session.pendingFloorArrival == null
-                        ) {
-                            session.pauseMotion()
-                            session.chooseStart(startId)
-                            session.confirmStart()
-                            pickingStart = false
-                        }
-                    }
-                ) {
-                    Text("I am here — confirm")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        pickingStart = false
-                    }
-                ) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    if (confirmFloor && pendingTarget != null) {
-        AlertDialog(
-            onDismissRequest = {
-                confirmFloor = false
-            },
-            title = {
-                Text("Confirm floor arrival")
-            },
-            text = {
-                Text(
-                    "Are you physically on $pendingFloorName at " +
-                            "the mapped stairs or elevator landing? " +
-                            "Confirming reinitializes your position " +
-                            "at that connector."
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        session.confirmTransition()
-                        confirmFloor = false
-                    }
-                ) {
-                    Text("Yes, I have arrived")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        // Dismiss only; the transfer remains pending.
-                        confirmFloor = false
-                    }
-                ) {
-                    Text("Not yet")
-                }
-            }
-        )
-    }
-
-    if (confirmExit) {
-        AlertDialog(
-            onDismissRequest = {
-                confirmExit = false
-            },
-            title = {
-                Text("Leave navigation?")
-            },
-            text = {
-                Text(
-                    "A floor change is in progress. Leaving cancels " +
-                            "that transfer without confirming your arrival. " +
-                            "Confirm your actual location when you return."
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        session.cancelFloorTransition()
-                        session.pauseMotion()
-                        confirmExit = false
-                        onBack()
-                    }
-                ) {
-                    Text("Leave navigation")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        confirmExit = false
-                    }
-                ) {
-                    Text("Stay")
-                }
-            }
-        )
-    }
-
-    if (diagnostics) {
-        Dialog(
-            onDismissRequest = {
-                diagnostics = false
-            }
-        ) {
-            Surface(
-                shape = RoundedCornerShape(24.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 480.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "Current navigation session",
-                        style = MaterialTheme.typography.titleLarge
-                    )
-
-                    Text(
-                        "Ready: ${session.ready}\n" +
-                                "Sensors running: $running\n" +
-                                "Estimated floor: " +
-                                "${session.estimate?.floorId ?: "Unknown"}"
-                    )
-
-                    session.estimate?.let { estimate ->
-                        Text(
-                            "Position: %.1f, %.1f m\nSpread: %.1f m"
-                                .format(
-                                    estimate.x,
-                                    estimate.y,
-                                    estimate.spreadM
-                                )
-                        )
-                    }
-
-                    Text(
-                        "Destination: " +
-                                "${session.destination?.name ?: "Not selected"}\n" +
-                                "Route nodes: ${session.routeNodes.size}\n" +
-                                "Next index: ${session.nextIndex}"
-                    )
-
-                    Text(
-                        "Travel mode: ${session.floorTravelMode.name}\n" +
-                                "Pending arrival: " +
-                                "${session.pendingFloorArrival?.name ?: "None"}"
-                    )
-
-                    Text(session.status)
-
-                    session.errors.forEach { error ->
-                        Text(
-                            text = error,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-
-                    TextButton(
-                        onClick = {
-                            diagnostics = false
-                        }
-                    ) {
-                        Text("Close")
-                    }
-                }
-            }
-        }
-    }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = building.buildingName,
-                            style = MaterialTheme.typography.titleLarge
-                        )
-
-                        val locationText = when {
-                            transferInProgress ->
-                                "Transferring to $pendingFloorName"
-
-                            session.ready ->
-                                "Location initialized"
-
-                            else ->
-                                "Choose your start"
-                        }
-
-                        Text(
-                            text = "$floorName · $locationText",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                },
-                navigationIcon = {
-                    TextButton(
-                        onClick = {
-                            requestExit()
-                        }
-                    ) {
-                        Text("Back")
-                    }
-                }
-            )
-        },
-        bottomBar = {
-            Surface(
-                tonalElevation = 3.dp,
-                shadowElevation = 8.dp,
-                shape = RoundedCornerShape(
-                    topStart = 24.dp,
-                    topEnd = 24.dp
-                )
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = when {
-                            session.errors.isNotEmpty() ->
-                                "Map needs correction"
-
-                            !session.ready ->
-                                "1. Confirm your starting point"
-
-                            transferInProgress ->
-                                "Floor change to $pendingFloorName"
-
-                            session.arrived ->
-                                "You have arrived"
-
-                            session.destination == null ->
-                                "2. Choose a destination above"
-
-                            session.route == null ->
-                                "No available route"
-
-                            else ->
-                                session.instruction
-                        },
-                        style = MaterialTheme.typography.titleMedium
-                    )
-
-                    if (session.errors.isNotEmpty()) {
-                        session.errors.forEach { error ->
-                            Text(
-                                text = error,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    } else if (!session.ready) {
-                        Text(
-                            text = session.status,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-
-                        Button(
-                            onClick = {
-                                openStartPicker()
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Choose and confirm my location")
-                        }
-                    } else {
-                        // During a transfer, show arrival controls first,
-                        // before optional settings.
-                        if (transferInProgress) {
-                            FloorChangeControls(
-                                session = session,
-                                onConfirmArrival = {
-                                    session.pauseMotion()
-                                    confirmFloor = true
-                                },
-                                onCorrectLocation = {
-                                    openStartPicker()
-                                }
-                            )
-                        }
-
-                        Text(
-                            text = session.status,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-
-                        Row(
-                            modifier = Modifier.horizontalScroll(
-                                rememberScrollState()
-                            ),
-                            horizontalArrangement =
-                                Arrangement.spacedBy(8.dp)
-                        ) {
-                            FilterChip(
-                                selected = session.stepFree,
-                                enabled = !transferInProgress,
-                                onClick = {
-                                    session.updateAccessibilityPreference(
-                                        !session.stepFree
-                                    )
-                                },
-                                label = {
-                                    Text("Step-free")
-                                }
-                            )
-
-                            FilterChip(
-                                selected = voice,
-                                onClick = {
-                                    voice = !voice
-                                },
-                                label = {
-                                    Text("Voice guidance")
-                                }
-                            )
-
-                            TextButton(
-                                enabled = !transferInProgress,
-                                onClick = {
-                                    openStartPicker()
-                                }
-                            ) {
-                                Text("Change start")
-                            }
-
-                            TextButton(
-                                enabled = !transferInProgress,
-                                onClick = {
-                                    session.pauseMotion()
-                                    scanning = true
-                                }
-                            ) {
-                                Text("Scan to correct")
-                            }
-                        }
-
-                        if (!transferInProgress) {
-                            FloorChangeControls(
-                                session = session,
-                                onConfirmArrival = {
-                                    session.pauseMotion()
-                                    confirmFloor = true
-                                },
-                                onCorrectLocation = {
-                                    openStartPicker()
-                                }
-                            )
-                        }
-
-                        if (
-                            session.route != null &&
-                            !session.arrived &&
-                            !transferInProgress
-                        ) {
-                            key(session.motionEpoch) {
-                                NavigationMotionControls(
-                                    enabled =
-                                        !diagnostics &&
-                                                !pickingStart &&
-                                                !confirmFloor &&
-                                                !confirmExit &&
-                                                session.pendingFloorArrival ==
-                                                null &&
-                                                session.transitionTarget ==
-                                                null,
-                                    onStep = session::walk,
-                                    onRunningChanged = {
-                                        running = it
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.horizontalScroll(
-                            rememberScrollState()
-                        ),
-                        horizontalArrangement =
-                            Arrangement.spacedBy(8.dp)
-                    ) {
-                        TextButton(
-                            onClick = {
-                                session.pauseMotion()
-                                diagnostics = true
-                            }
-                        ) {
-                            Text("Session details")
-                        }
-
-                        if (
-                            session.route != null &&
-                            !session.arrived
-                        ) {
-                            TextButton(
-                                enabled = !transferInProgress,
-                                onClick = {
-                                    session.pauseMotion()
-                                    session.reportBlocked()
-                                }
-                            ) {
-                                Text("Report blocked path")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = {
-                    query = it
-                },
-                enabled = !transferInProgress,
-                singleLine = true,
-                label = {
-                    Text("Where do you want to go?")
-                },
-                placeholder = {
-                    Text("Search mapped rooms and places")
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp)
-            )
-
-            if (transferInProgress) {
-                Text(
-                    text = "Tracking and destination changes are paused. " +
-                            "Use the arrival controls below after reaching " +
-                            "$pendingFloorName.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            if (query.isNotBlank() && !transferInProgress) {
-                val searchText = query.trim()
-
-                val results = session.landmarks
-                    .filter { node ->
-                        node.name.contains(searchText, true) ||
-                                node.keywords.any { keyword ->
-                                    keyword.contains(searchText, true)
-                                }
-                    }
-                    .take(4)
-
-                if (results.isEmpty()) {
-                    Text("No mapped place matches this search.")
-                }
-
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 170.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    results.forEach { node ->
-                        val destinationFloorName = building.floors
-                            .firstOrNull {
-                                it.floorId == node.floorId
-                            }
-                            ?.floorName
-                            ?: node.floorId
-
-                        ListItem(
-                            headlineContent = {
-                                Text(node.name)
-                            },
-                            supportingContent = {
-                                Text(destinationFloorName)
-                            },
-                            modifier = Modifier.clickable(
-                                enabled =
-                                    session.pendingFloorArrival == null
-                            ) {
-                                session.pauseMotion()
-                                session.setDestination(node.nodeId)
-                                query = ""
-
-                                if (!session.ready) {
-                                    openStartPicker()
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier.horizontalScroll(
-                    rememberScrollState()
-                ),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                building.floors.forEach { floor ->
-                    FilterChip(
-                        selected = floorId == floor.floorId,
-                        onClick = {
-                            // Browsing a floor does not change location.
-                            floorId = floor.floorId
-                        },
-                        label = {
-                            Text(floor.floorName)
-                        }
-                    )
-                }
-            }
-
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                shape = RoundedCornerShape(20.dp),
-                color = Color(0xFFF3F6FA)
-            ) {
-                NavigationMapCanvas(
-                    building = building,
-                    floorId = floorId,
-                    session = session
-                )
-            }
-
-            Text(
-                text = "Pinch to zoom · Drag to pan · " +
-                        "Blue: route / position · Red: destination",
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-        }
-    }
-}
-
-@Composable
-private fun NavigationMapCanvas(
-    building: Building,
-    floorId: String,
-    session: NavigationSession
-) {
-    val floor = building.floors
-        .firstOrNull {
-            it.floorId == floorId
-        }
-        ?: return
-
-    val nodes = remember(building) {
-        building.nodes.associateBy {
-            it.nodeId
-        }
-    }
-
-    var zoom by remember(building.buildingId, floorId) {
-        mutableFloatStateOf(1f)
-    }
-
-    var pan by remember(building.buildingId, floorId) {
-        mutableStateOf(Offset.Zero)
-    }
-
-    val labelPaint = remember {
-        Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.rgb(35, 48, 65)
-        }
-    }
-
-    Canvas(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(building.buildingId, floorId) {
-                detectTransformGestures { _, delta, factor, _ ->
-                    zoom = (zoom * factor).coerceIn(0.7f, 5f)
-                    pan += delta
-                }
-            }
-    ) {
-        if (
-            !floor.widthM.isFinite() ||
-            !floor.heightM.isFinite() ||
-            floor.widthM <= 0f ||
-            floor.heightM <= 0f ||
-            size.minDimension <= 0f
-        ) {
-            return@Canvas
-        }
-
-        val margin = 30.dp.toPx()
-
-        val scale = min(
-            (size.width - 2 * margin) / floor.widthM,
-            (size.height - 2 * margin) / floor.heightM
-        ).coerceAtLeast(0.01f) * zoom
-
-        fun point(x: Double, y: Double): Offset {
-            return Offset(
-                x = size.width / 2f +
-                        pan.x +
-                        (x.toFloat() - floor.widthM / 2f) * scale,
-                y = size.height / 2f +
-                        pan.y +
-                        (y.toFloat() - floor.heightM / 2f) * scale
-            )
-        }
-
-        drawRect(
-            color = Color.White,
-            topLeft = point(0.0, 0.0),
-            size = Size(
-                width = floor.widthM * scale,
-                height = floor.heightM * scale
-            )
-        )
-
-        building.edges.forEach { edge ->
-            val from = nodes[edge.sourceNodeId]
-            val to = nodes[edge.destinationNodeId]
-
-            if (
-                from != null &&
-                to != null &&
-                from.floorId == floorId &&
-                to.floorId == floorId
-            ) {
-                val available =
-                    edge.isAvailable &&
-                            edge.edgeId !in session.blocked
-
-                drawLine(
-                    color = if (available) {
-                        Color(0xFFCBD5E1)
-                    } else {
-                        Color(0xFFDC2626)
-                    },
-                    start = point(
-                        from.x.toDouble(),
-                        from.y.toDouble()
-                    ),
-                    end = point(
-                        to.x.toDouble(),
-                        to.y.toDouble()
-                    ),
-                    strokeWidth = 7.dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-            }
-        }
-
-        // Render only segments belonging to this displayed floor.
-        session.routeNodes
-            .zipWithNext()
-            .forEach { (from, to) ->
-                if (
-                    from.floorId == floorId &&
-                    to.floorId == floorId
-                ) {
-                    drawLine(
-                        color = Color(0xFF2563EB),
-                        start = point(
-                            from.x.toDouble(),
-                            from.y.toDouble()
-                        ),
-                        end = point(
-                            to.x.toDouble(),
-                            to.y.toDouble()
-                        ),
-                        strokeWidth = 5.dp.toPx(),
-                        cap = StrokeCap.Round
-                    )
-                }
-            }
-
-        labelPaint.textSize = 11.dp.toPx()
-
-        building.nodes
-            .filter {
-                it.floorId == floorId &&
-                        it.type != "JUNCTION"
-            }
-            .forEach { node ->
-                val center = point(
-                    node.x.toDouble(),
-                    node.y.toDouble()
-                )
-
-                drawCircle(
-                    color = if (
-                        node.nodeId == session.destinationId
-                    ) {
-                        Color(0xFFDC2626)
-                    } else {
-                        Color(0xFF334155)
-                    },
-                    radius = 5.dp.toPx(),
-                    center = center
-                )
-
-                drawContext.canvas.nativeCanvas.drawText(
-                    node.name,
-                    center.x + 7.dp.toPx(),
-                    center.y - 8.dp.toPx(),
-                    labelPaint
-                )
-            }
-
-        session.estimate
-            ?.takeIf {
-                it.floorId == floorId &&
-                        it.x.isFinite() &&
-                        it.y.isFinite()
-            }
-            ?.let { estimate ->
-                val center = point(
-                    estimate.x,
-                    estimate.y
-                )
-
-                val spreadRadius =
-                    estimate.spreadM.toFloat() * scale
-
-                if (
-                    spreadRadius.isFinite() &&
-                    spreadRadius >= 0f
-                ) {
-                    drawCircle(
-                        color = Color(0x222563EB),
-                        radius = spreadRadius.coerceIn(
-                            minimumValue = 1f,
-                            maximumValue =
-                                size.maxDimension.coerceAtLeast(1f)
-                        ),
-                        center = center
-                    )
-                }
-
-                drawCircle(
-                    color = Color.White,
-                    radius = 9.dp.toPx(),
-                    center = center
-                )
-
-                drawCircle(
-                    color = Color(0xFF2563EB),
-                    radius = 6.dp.toPx(),
-                    center = center
-                )
-            }
+        } else tts?.stop()
     }
 }

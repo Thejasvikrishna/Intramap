@@ -62,10 +62,12 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
+    implementation("com.google.ar:core:1.54.0")
 
     implementation(platform(libs.supabase.bom))
     implementation(libs.supabase.postgrest)
     implementation(libs.supabase.auth)
+    implementation("io.github.jan-tennert.supabase:storage-kt")
     implementation(libs.ktor.client.android)
 
     implementation("com.google.mlkit:text-recognition:16.0.1")

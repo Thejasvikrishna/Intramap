@@ -176,4 +176,46 @@ class LocalizationLabTest {
 
         assertEquals(first.particles(), second.particles())
     }
+
+    @Test
+    fun relocalizeAcceptsNearbyNetworkPoint() {
+        val engine = engine()
+
+        val update = engine.relocalize(
+            floorId = "G",
+            x = 5.0,
+            y = 10.0
+        )
+
+        assertTrue(update.accepted)
+        assertEquals("entry", update.anchorNodeId)
+        assertEquals("G", engine.estimate().floorId)
+        assertEquals(300, engine.particles().size)
+    }
+
+    @Test
+    fun relocalizeRejectsFarPoint() {
+        val engine = engine()
+
+        val update = engine.relocalize(
+            floorId = "G",
+            x = 5.0,
+            y = 19.5
+        )
+
+        assertFalse(update.accepted)
+    }
+
+    @Test
+    fun relocalizeRejectsUnknownFloor() {
+        val engine = engine()
+
+        val update = engine.relocalize(
+            floorId = "missing",
+            x = 5.0,
+            y = 10.0
+        )
+
+        assertFalse(update.accepted)
+    }
 }

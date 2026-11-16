@@ -153,4 +153,51 @@ class NavigationSessionTest {
         assertNull(session.estimate)
         assertNull(session.route)
     }
+
+    @Test
+    fun `reference pose relocalizes and creates route`() {
+        val session = newSession()
+
+        session.setDestination("c")
+
+        val accepted = session.applyReferencePose(
+            floorId = "f1",
+            x = 5.0,
+            y = 5.0,
+            headingDeg = 0.0
+        )
+
+        assertTrue(
+            "Expected reference pose to be accepted: ${session.status}",
+            accepted
+        )
+
+        assertNotNull(session.estimate)
+        assertNotNull(
+            "Expected a route after AR relocalization: ${session.status}",
+            session.route
+        )
+
+        assertEquals(
+            "c",
+            session.route?.nodeIds?.last()
+        )
+    }
+
+    @Test
+    fun `reference pose far from network is rejected`() {
+        val session = newSession()
+
+        session.setDestination("c")
+
+        val accepted = session.applyReferencePose(
+            floorId = "f1",
+            x = 5.0,
+            y = 19.5,
+            headingDeg = 0.0
+        )
+
+        assertEquals(false, accepted)
+        assertNull(session.route)
+    }
 }

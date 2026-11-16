@@ -23,7 +23,8 @@ data class LabEstimate(
 
 data class LabUpdate(
     val accepted: Boolean,
-    val message: String
+    val message: String,
+    val anchorNodeId: String? = null
 )
 
 class LocalizationLabEngine(
@@ -103,6 +104,83 @@ class LocalizationLabEngine(
         }
     }
 
+    /**
+     * Reinitializes belief at an arbitrary validated map position.
+     * This is a localization update, never a map edit.
+     */
+    fun relocalize(
+        floorId: String,
+        x: Double,
+        y: Double
+    ): LabUpdate {
+        require(x.isFinite() && y.isFinite())
+
+        val floor = building.floors.firstOrNull { it.floorId == floorId }
+            ?: return LabUpdate(false, "Rejected: unknown floor.")
+
+        if (x < 0.0 || y < 0.0 ||
+            x > floor.widthM.toDouble() ||
+            y > floor.heightM.toDouble()
+        ) {
+            return LabUpdate(false, "Rejected: position is outside the mapped floor.")
+        }
+
+        val nearest = building.nodes
+            .filter { it.floorId == floorId }
+            .minByOrNull { node ->
+                hypot(x - node.x.toDouble(), y - node.y.toDouble())
+            }
+            ?: return LabUpdate(false, "Rejected: no mapped landmarks on this floor.")
+
+        val networkDistance = hypot(
+            x - nearest.x.toDouble(),
+            y - nearest.y.toDouble()
+        )
+
+        if (networkDistance > corridorHalfWidthM * 3.0) {
+            return LabUpdate(
+                false,
+                "Rejected: position is too far from the mapped path network."
+            )
+        }
+
+        activeComponent = components.getValue(nearest.nodeId)
+        distanceSinceCorrectionM = 0.0
+
+        cloud = List(particleCount) {
+            var accepted: LabParticle? = null
+
+            repeat(20) {
+                if (accepted == null) {
+                    val px = x + gaussian() * 0.25
+                    val py = y + gaussian() * 0.25
+
+                    if (validPoint(px, py, floorId)) {
+                        accepted = LabParticle(
+                            px,
+                            py,
+                            floorId,
+                            1.0 / particleCount
+                        )
+                    }
+                }
+            }
+
+            accepted ?: LabParticle(
+                nearest.x.toDouble(),
+                nearest.y.toDouble(),
+                floorId,
+                1.0 / particleCount
+            )
+        }
+
+        return LabUpdate(
+            true,
+            "Reference pose accepted; position relocalized.",
+            nearest.nodeId
+        )
+    }
+
     fun estimate(): LabEstimate {
         check(cloud.isNotEmpty()) {
             "Call reset before requesting an estimate."
@@ -120,11 +198,8 @@ class LocalizationLabEngine(
             "The Lab engine expects particles on one floor."
         }
 
-        val meanX =
-            cloud.sumOf { it.x * it.weight } / totalWeight
-
-        val meanY =
-            cloud.sumOf { it.y * it.weight } / totalWeight
+        val meanX = cloud.sumOf { it.x * it.weight } / totalWeight
+        val meanY = cloud.sumOf { it.y * it.weight } / totalWeight
 
         val variance = cloud.sumOf { particle ->
             val normalizedWeight = particle.weight / totalWeight
@@ -140,8 +215,6 @@ class LocalizationLabEngine(
             normalizedWeight * normalizedWeight
         }
 
-        // A mean can lie outside the corridor model at a junction.
-        // In that case, choose a valid particle nearest to the mean.
         val meanIsValid = validPoint(meanX, meanY, floorId)
 
         val representative = if (meanIsValid) {
@@ -260,8 +333,6 @@ class LocalizationLabEngine(
             )
         }
 
-        // Provisional observation-noise model.
-        // Quality is manually supplied, not a calibrated probability.
         val sigma = if (adaptive) {
             0.8 + 4.0 * (1.0 - simulatedQuality)
         } else {
@@ -308,7 +379,6 @@ class LocalizationLabEngine(
             particle.copy(weight = weights[index] / total)
         }
 
-        // Weak observations only partially reduce the drift accumulator.
         distanceSinceCorrectionM *= if (adaptive) {
             1.0 - 0.8 * simulatedQuality
         } else {

@@ -1,0 +1,65 @@
+name: Android validation
+
+on:
+  push:
+    branches: [feature/walking-map-experience]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ''
+      SUPABASE_PUBLISHABLE_KEY: ''
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          problem-matcher: true
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: 'true'
+          log-accepted-android-sdk-licenses: 'false'
+      - name: Install the project's compile SDK
+        run: sdkmanager "platforms;android-37"
+      - name: Compile, test and assemble debug app
+        shell: bash
+        run: |
+          set -o pipefail
+          bash ./gradlew --no-daemon --stacktrace :app:compileDebugKotlin :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee android-validation.log
+      - name: Preserve build and unit-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-validation-reports
+          path: |
+            android-validation.log
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Preserve successfully built debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intramap-debug-review
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
