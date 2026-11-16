@@ -19,19 +19,6 @@ import com.intramap.localization.lab.LocalizationLabEngine
 import com.intramap.vision.CameraLandmarkObservation
 import kotlin.math.hypot
 
-internal data class Projection(val x: Double, val y: Double, val t: Double, val distance: Double)
-
-internal fun projectPoint(x: Double, y: Double, a: LocationNode, b: LocationNode): Projection {
-    val dx = (b.x - a.x).toDouble()
-    val dy = (b.y - a.y).toDouble()
-    val d2 = dx * dx + dy * dy
-    val t = if (d2 == 0.0) 0.0 else
-        (((x - a.x) * dx + (y - a.y) * dy) / d2).coerceIn(0.0, 1.0)
-    val px = a.x + t * dx
-    val py = a.y + t * dy
-    return Projection(px, py, t, hypot(x - px, y - py))
-}
-
 enum class FloorTravelMode {
     AUTO,
     STAIRS,
@@ -271,10 +258,6 @@ class NavigationSession(
         return update.accepted
     }
 
-    /**
-     * Applies an accepted AR reference pose. This updates visitor localization only;
-     * it never modifies the published map.
-     */
     fun applyReferencePose(
         floorId: String,
         x: Double,

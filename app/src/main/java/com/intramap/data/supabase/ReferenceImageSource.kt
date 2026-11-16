@@ -3,16 +3,14 @@ package com.intramap.data.supabase
 import android.graphics.Bitmap
 import com.intramap.ar.ReferenceImageCandidate
 import io.github.jan.supabase.SupabaseClient
-import io.github.jan.supabase.storage.storage
 import io.github.jan.supabase.postgrest.postgrest
+import io.github.jan.supabase.storage.storage
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 
 @Serializable
-private data class ReferenceImageRecord(
+data class ReferenceImageRecord(
     val building_id: String,
     val version_id: String,
     val reference_key: String,
@@ -25,10 +23,6 @@ private data class ReferenceImageRecord(
     val content_sha256: String
 )
 
-/**
- * Persists reference-image registrations for a draft version.
- * Replacement preserves the reference key so visitor AR positioning remains compatible.
- */
 class ReferenceImageSource(private val client: SupabaseClient) {
 
     suspend fun existingRegistrations(
@@ -79,9 +73,10 @@ class ReferenceImageSource(private val client: SupabaseClient) {
 
         client.storage.from("reference_images").upload(
             path = storagePath,
-            data = bytes,
+            data = bytes
+        ) {
             upsert = true
-        )
+        }
 
         val record = ReferenceImageRecord(
             building_id = buildingId,

@@ -1,5 +1,6 @@
 package com.intramap.ar
 
+import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import com.google.ar.core.Coordinates2d
@@ -11,12 +12,9 @@ import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
-/**
- * Renders the ARCore camera background and drives Session.update().
- * It does not draw map content, enroll images, or update visitor position.
- */
 class ArCameraRenderer(
     private val sessionProvider: () -> Session?,
+    private val displayRotation: () -> Int,
     private val onFrame: (Frame) -> Unit
 ) : GLSurfaceView.Renderer {
     private companion object {
@@ -40,9 +38,9 @@ class ArCameraRenderer(
         """
         val POSITIONS = floatArrayOf(
             -1f, -1f, 0f,
-             1f, -1f, 0f,
-            -1f,  1f, 0f,
-             1f,  1f, 0f
+            1f, -1f, 0f,
+            -1f, 1f, 0f,
+            1f, 1f, 0f
         )
         val SCREEN_UVS = floatArrayOf(
             0f, 0f,
@@ -75,10 +73,10 @@ class ArCameraRenderer(
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
         cameraTextureId = ids[0]
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, 0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -91,7 +89,7 @@ class ArCameraRenderer(
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
         val session = sessionProvider() ?: return
         if (width > 0 && height > 0) {
-            session.setDisplayGeometry(session.displayRotation, width, height)
+            session.setDisplayGeometry(displayRotation(), width, height)
         }
         if (cameraTextureId != 0) {
             session.setCameraTextureName(cameraTextureId)
@@ -120,7 +118,7 @@ class ArCameraRenderer(
 
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
         GLES20.glUniform1i(textureLocation, 0)
 
         positions.position(0)
@@ -134,7 +132,7 @@ class ArCameraRenderer(
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GLES20.glDisableVertexAttribArray(positionLocation)
         GLES20.glDisableVertexAttribArray(texCoordLocation)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, 0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
         GLES20.glUseProgram(0)
     }
 

@@ -80,7 +80,8 @@ fun ArReferenceCameraScreen(
             Text(status)
             Text("State: ${state.state}")
 
-            when (availability) {
+            val currentAvailability = availability
+            when (currentAvailability) {
                 ArAvailability.Supported -> {
                     if (!permission) {
                         Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
@@ -132,7 +133,7 @@ fun ArReferenceCameraScreen(
                     Text("Install or update Google Play Services for AR, then reopen this screen.")
 
                 ArAvailability.Unsupported -> Text("This device does not support ARCore.")
-                is ArAvailability.Error -> Text(availability.message, color = MaterialTheme.colorScheme.error)
+                is ArAvailability.Error -> Text(currentAvailability.message, color = MaterialTheme.colorScheme.error)
                 null -> Text("Checking AR availability…")
             }
         }
@@ -147,6 +148,9 @@ fun ArReferenceCameraScreen(
                             preserveEGLContextOnPause = true
                             val renderer = ArCameraRenderer(
                                 sessionProvider = { activeSession.activeSession() },
+                                displayRotation = {
+                                    activity?.windowManager?.defaultDisplay?.rotation ?: 0
+                                },
                                 onFrame = { frame -> activeSession.onFrameReady(frame) }
                             )
                             setRenderer(renderer)

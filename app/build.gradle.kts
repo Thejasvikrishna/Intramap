@@ -67,6 +67,7 @@ dependencies {
     implementation(platform(libs.supabase.bom))
     implementation(libs.supabase.postgrest)
     implementation(libs.supabase.auth)
+    implementation("io.github.jan.supabase:storage-kt")
     implementation(libs.ktor.client.android)
 
     implementation("com.google.mlkit:text-recognition:16.0.1")

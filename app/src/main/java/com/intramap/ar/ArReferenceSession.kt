@@ -27,14 +27,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 enum class ArSessionState { IDLE, STARTING, RUNNING, PAUSED, FAILED, CLOSED }
 
 data class ArSessionEvent(
-    val state: ArSessionState, val message: String,
+    val state: ArSessionState,
+    val message: String,
     val trackingFailure: TrackingFailureReason? = null
 )
 
-/**
- * Owns one ARCore Session. The owner must render frames and release GL resources; this class does not.
- * A session token changes whenever the underlying AR world is recreated, preventing stale transforms.
- */
 class ArReferenceSession(
     context: Context,
     private val buildingId: String,
@@ -61,7 +58,6 @@ class ArReferenceSession(
         require(registrations.all { it.buildingId == buildingId && it.versionId == versionId })
     }
 
-    /** Returns the live Session only while it is running; never exposes a closed session. */
     fun activeSession(): Session? = synchronized(lock) {
         if (closed.get() || _state.value.state != ArSessionState.RUNNING) null else session
     }
@@ -78,7 +74,7 @@ class ArReferenceSession(
                 created.configure(config)
                 created.resume()
                 session = created
-                val token = created.sessionId ?: "ar-session-${System.nanoTime()}"
+                val token = "ar-session-${System.nanoTime()}"
                 adapter = ArCoreReferenceAdapter(buildingId, versionId, token)
                 aligner = ReferencePoseAligner(
                     Building(buildingId, "", "", emptyList(), emptyList(), emptyList()),
@@ -132,7 +128,6 @@ class ArReferenceSession(
         }
     }
 
-    /** Call from the GL/render thread after session.update(); emits the frame once. */
     fun onFrameReady(frame: Frame) {
         if (closed.get()) return
         _frames.tryEmit(frame)
@@ -159,14 +154,6 @@ class ArReferenceSession(
             ) ?: continue
 
             onObservation(currentAligner.observe(observation, now))
-        }
-    }
-
-    fun trackingFailure(): TrackingFailureReason? = session?.let {
-        try {
-            it.camera.trackingFailureReason
-        } catch (_: Exception) {
-            null
         }
     }
 
