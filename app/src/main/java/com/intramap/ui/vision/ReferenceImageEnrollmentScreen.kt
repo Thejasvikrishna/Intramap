@@ -1,9 +1,13 @@
 package com.intramap.ui.vision
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.intramap.ar.ReferenceEnrollmentStatus
@@ -11,6 +15,7 @@ import com.intramap.ar.ReferenceImageCandidate
 import com.intramap.ar.ReferenceImagePolicy
 import com.intramap.data.supabase.ReferenceImageSource
 import io.github.jan.supabase.SupabaseClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
@@ -22,25 +27,70 @@ fun ReferenceImageEnrollmentScreen(
 ) {
     val source = remember(client) { ReferenceImageSource(client) }
     val scope = rememberCoroutineScope()
-    var image by remember { mutableStateOf<Bitmap?>(null) }
+    var image by remember(buildingId, versionId, referenceKey) { mutableStateOf<Bitmap?>(null) }
+    var widthText by rememberSaveable(buildingId, versionId, referenceKey) { mutableStateOf("") }
+    var headingText by rememberSaveable(buildingId, versionId, referenceKey) { mutableStateOf("") }
+    var xText by rememberSaveable(buildingId, versionId, referenceKey, mapX) { mutableStateOf(mapX.toString()) }
+    var yText by rememberSaveable(buildingId, versionId, referenceKey, mapY) { mutableStateOf(mapY.toString()) }
+    var verified by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("Choose a clear, uniquely patterned reference image.") }
-    val candidate = image?.let { ReferenceImageCandidate(referenceKey,floorId,it,physicalWidthM,mapX,mapY,mapHeadingDeg) }
-    val validation = candidate?.let { ReferenceImagePolicy.validate(it,emptySet()) } ?: ReferenceEnrollmentStatus.LOW_CONTRAST
-    Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Register reference image",style = MaterialTheme.typography.titleLarge)
+    var status by remember { mutableStateOf("Choose an image and enter measured marker metadata. No width or heading is assumed.") }
+    val width = widthText.toFloatOrNull()?.takeIf { it.isFinite() && it > 0f }
+    val heading = headingText.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
+    val x = xText.toDoubleOrNull()?.takeIf { it.isFinite() }
+    val y = yText.toDoubleOrNull()?.takeIf { it.isFinite() }
+    val validIds = listOf(buildingId, versionId, referenceKey, floorId).all { it.isNotBlank() }
+    val candidate = image?.let { bitmap ->
+        if (validIds && width != null && heading != null && x != null && y != null)
+            ReferenceImageCandidate(referenceKey, floorId, bitmap, width, x, y, heading)
+        else null
+    }
+    val validation = candidate?.let { ReferenceImagePolicy.validate(it, emptySet()) }
+    BackHandler(enabled = busy) {}
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("Register reference image", style = MaterialTheme.typography.titleLarge)
         Text(status)
-        ReferenceImagePicker(enabled = !busy) { selected -> image = selected; status = "Image selected. Review the registration details." }
-        if (validation != ReferenceEnrollmentStatus.READY) Text("Image issue: $validation",color = MaterialTheme.colorScheme.error)
-        Text("Physical width: ${physicalWidthM} m · map: ($mapX, $mapY) · heading: $mapHeadingDeg°")
-        Button(enabled = !busy && validation == ReferenceEnrollmentStatus.READY,onClick = {
+        Text("Floor: $floorId · reference: $referenceKey")
+        ReferenceImagePicker(enabled = !busy) { selected -> image = selected; verified = false }
+        OutlinedTextField(widthText, { widthText = it; verified = false },
+            label = { Text("Measured printed image width (metres)") },
+            enabled = !busy, singleLine = true, isError = widthText.isNotBlank() && width == null)
+        OutlinedTextField(headingText, { headingText = it; verified = false },
+            label = { Text("Reference map heading (0 to less than 360 degrees)") },
+            enabled = !busy, singleLine = true, isError = headingText.isNotBlank() && heading == null)
+        OutlinedTextField(xText, { xText = it; verified = false },
+            label = { Text("Reference centre map X (metres)") },
+            enabled = !busy, singleLine = true, isError = x == null)
+        OutlinedTextField(yText, { yText = it; verified = false },
+            label = { Text("Reference centre map Y (metres)") },
+            enabled = !busy, singleLine = true, isError = y == null)
+        Text("Use the mapping coordinate system and reference orientation convention. The selected node coordinates are only a starting point, not a measured marker centre.")
+        if (validation != null && validation != ReferenceEnrollmentStatus.READY)
+            Text("Image issue: $validation", color = MaterialTheme.colorScheme.error)
+        Row {
+            Checkbox(verified, { verified = it }, enabled = !busy)
+            Text("I measured the printed width and verified the reference centre and heading on this floor.")
+        }
+        Text("Client validation does not establish ARCore recognition quality or detect existing server duplicates.")
+        Button(enabled = !busy && verified && validation == ReferenceEnrollmentStatus.READY, onClick = {
             val value = candidate ?: return@Button
-            busy = true; status = "Uploading reference image…"
+            busy = true
+            status = "Uploading reference image…"
             scope.launch {
-                try { source.register(value,buildingId,versionId); status = "Reference registered for this draft version."; onDone() }
-                catch (_: Exception) { status = "Registration failed. Check storage bucket, policies and duplicate content." }
-                finally { busy = false }
+                try {
+                    source.register(value, buildingId, versionId)
+                    status = "Reference registered for this draft version."
+                    onDone()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    status = "Registration failed or is unconfirmed. Check server state before retrying; storage policies or duplicate content may reject registration."
+                } finally { busy = false }
             }
-        }) { Text("Register") }
+        }) { Text(if (busy) "Registering…" else "Register measured reference") }
+        OutlinedButton(enabled = !busy, onClick = onDone) { Text("Back to draft") }
     }
 }
