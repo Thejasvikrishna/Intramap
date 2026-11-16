@@ -56,6 +56,11 @@ class ArReferenceSession(
         require(registrations.all { it.buildingId == buildingId && it.versionId == versionId })
     }
 
+    /** Returns the live Session only while it is running; never exposes a closed session. */
+    fun activeSession(): Session? = synchronized(lock) {
+        if (closed.get() || _state.value.state != ArSessionState.RUNNING) null else session
+    }
+
     fun start(): Boolean {
         if (closed.get()) return false
         synchronized(lock) {

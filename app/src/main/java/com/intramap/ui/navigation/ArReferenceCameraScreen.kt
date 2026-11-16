@@ -129,7 +129,7 @@ fun ArReferenceCameraScreen(
                             setEGLContextClientVersion(2)
                             preserveEGLContextOnPause = true
                             val renderer = ArCameraRenderer(
-                                sessionProvider = { activeSession.sessionOrNull() },
+                                sessionProvider = { activeSession.activeSession() },
                                 onFrame = { frame -> activeSession.onFrameReady(frame) }
                             )
                             setRenderer(renderer)
@@ -149,11 +149,3 @@ fun ArReferenceCameraScreen(
         }
     }
 }
-
-private fun ArReferenceSession.sessionOrNull(): com.google.ar.core.Session? =
-    try {
-        java.lang.reflect.Field::class.java
-        null
-    } catch (_: Exception) {
-        null
-    }
