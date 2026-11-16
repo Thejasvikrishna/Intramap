@@ -7,7 +7,7 @@ enum class AccessibilityMode { STANDARD, STEP_FREE }
 
 data class Route(
     val nodeIds: List<String>, val edgeIds: List<String>,
-    /** Includes mapped cross-floor link distance; transfer walking time is still unknown. */
+    /** Same-floor mapped walking distance only; transfer distance is unknown. */
     val totalDistance: Float, val nodesExpanded: Int,
     val totalCost: Float = totalDistance
 )
@@ -60,14 +60,18 @@ fun findRoute(
 
             val orderedNodes = nodes.reversed()
             val orderedEdges = edges.reversed()
-            val total = orderedEdges.sumOf { edgeId ->
-                graph.edges.getValue(edgeId).distance.toDouble()
+            val walking = orderedEdges.indices.sumOf { i ->
+                val edge = graph.edges.getValue(orderedEdges[i])
+                val from = graph.nodes.getValue(edge.sourceNodeId)
+                val to = graph.nodes.getValue(edge.destinationNodeId)
+
+                if (from.floorId == to.floorId) edge.distance.toDouble() else 0.0
             }.toFloat()
 
             return Route(
                 orderedNodes,
                 orderedEdges,
-                total,
+                walking,
                 expanded,
                 cur.g
             )

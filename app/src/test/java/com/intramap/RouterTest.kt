@@ -39,18 +39,18 @@ class RouterTest {
     }
 
     @Test fun standardUsesStairs() {
-        assertEquals(52f, findRoute(g, "A0_entry", "A1_lab")!!.totalDistance, 0.001f)
+        assertEquals(52f, findRoute(g, "A0_entry", "A1_lab")!!.totalCost, 0.001f)
     }
 
     @Test fun stepFreeUsesElevator() {
         val r = findRoute(g, "A0_entry", "A1_lab", AccessibilityMode.STEP_FREE)!!
-        assertEquals(64f, r.totalDistance, 0.001f)
+        assertEquals(64f, r.totalCost, 0.001f)
         assertTrue("e7" in r.edgeIds)
     }
 
     @Test fun blockedStairsReroutesViaElevator() {
         val r = findRoute(g, "A0_entry", "A1_lab", blockedEdgeIds = setOf("e6"))!!
-        assertEquals(64f, r.totalDistance, 0.001f)
+        assertEquals(64f, r.totalCost, 0.001f)
     }
 
     @Test fun noRouteWhenAllFloorLinksBlocked() {
