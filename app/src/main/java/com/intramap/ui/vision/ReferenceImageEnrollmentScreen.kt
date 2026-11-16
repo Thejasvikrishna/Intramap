@@ -61,7 +61,7 @@ fun ReferenceImageEnrollmentScreen(
             ReferenceImageCandidate(
                 referenceKey = referenceKey,
                 floorId = floorId,
-                image = bitmap,
+                imageBytes = ReferenceImagePolicy.pngBytes(bitmap),
                 physicalWidthM = width,
                 mapX = x,
                 mapY = y,

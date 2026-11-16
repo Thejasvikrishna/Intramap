@@ -288,13 +288,13 @@ class NavigationSession(
         }
 
         val update = engine.relocalize(floorId, x, y)
-        refresh()
 
         if (!update.accepted) {
             status = update.message
             return false
         }
 
+        refresh()
         componentAnchorId = update.anchorNodeId
         arrived = false
         pendingFloorArrivalId = null

@@ -1,6 +1,5 @@
 package com.intramap.ar
 
-import android.graphics.Bitmap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
@@ -12,11 +11,11 @@ class ReferenceImagePolicyTest {
         x: Double = 1.0,
         y: Double = 1.0,
         heading: Double = 0.0,
-        image: Bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        imageBytes: ByteArray = ByteArray(16)
     ) = ReferenceImageCandidate(
         referenceKey = "reference_a",
         floorId = "floor_a",
-        image = image,
+        imageBytes = imageBytes,
         physicalWidthM = width,
         mapX = x,
         mapY = y,
@@ -28,6 +27,14 @@ class ReferenceImagePolicyTest {
         assertEquals(
             ReferenceEnrollmentStatus.READY,
             ReferenceImagePolicy.validate(candidate(), emptySet())
+        )
+    }
+
+    @Test
+    fun `missing image is rejected`() {
+        assertEquals(
+            ReferenceEnrollmentStatus.MISSING_IMAGE,
+            ReferenceImagePolicy.validate(candidate(imageBytes = ByteArray(0)), emptySet())
         )
     }
 
@@ -57,19 +64,20 @@ class ReferenceImagePolicyTest {
 
     @Test
     fun `duplicate content is rejected`() {
-        val image = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
-        val hash = ReferenceImagePolicy.contentHash(image)
+        val bytes = ByteArray(16)
+        val hash = ReferenceImagePolicy.contentHash(bytes)
 
         assertEquals(
             ReferenceEnrollmentStatus.DUPLICATE_CONTENT,
-            ReferenceImagePolicy.validate(candidate(image = image), setOf(hash))
+            ReferenceImagePolicy.validate(candidate(imageBytes = bytes), setOf(hash))
         )
     }
 
     @Test
     fun `different images produce different hashes`() {
-        val first = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
-        val second = Bitmap.createBitmap(3, 2, Bitmap.Config.ARGB_8888)
+        val first = ByteArray(16)
+        val second = ByteArray(16)
+        second[0] = 1
 
         assertNotEquals(
             ReferenceImagePolicy.contentHash(first),

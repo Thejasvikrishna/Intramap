@@ -1,6 +1,7 @@
 package com.intramap.ar
 
 import android.graphics.Bitmap
+import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 
 enum class ReferenceEnrollmentStatus {
@@ -16,17 +17,13 @@ enum class ReferenceEnrollmentStatus {
 data class ReferenceImageCandidate(
     val referenceKey: String,
     val floorId: String,
-    val image: Bitmap,
+    val imageBytes: ByteArray,
     val physicalWidthM: Float,
     val mapX: Double,
     val mapY: Double,
     val mapHeadingDeg: Double
 )
 
-/**
- * Client-side enrollment validation only. It cannot establish ARCore recognition
- * quality or prove that a physical marker was placed correctly.
- */
 object ReferenceImagePolicy {
 
     fun validate(
@@ -37,8 +34,8 @@ object ReferenceImagePolicy {
             return ReferenceEnrollmentStatus.INVALID_IMAGE
         }
 
-        if (candidate.image.width <= 0 || candidate.image.height <= 0) {
-            return ReferenceEnrollmentStatus.INVALID_IMAGE
+        if (candidate.imageBytes.isEmpty()) {
+            return ReferenceEnrollmentStatus.MISSING_IMAGE
         }
 
         if (!candidate.physicalWidthM.isFinite() || candidate.physicalWidthM <= 0f) {
@@ -57,7 +54,7 @@ object ReferenceImagePolicy {
             return ReferenceEnrollmentStatus.INVALID_HEADING
         }
 
-        val hash = contentHash(candidate.image)
+        val hash = contentHash(candidate.imageBytes)
         if (hash in existingContentHashes) {
             return ReferenceEnrollmentStatus.DUPLICATE_CONTENT
         }
@@ -65,25 +62,14 @@ object ReferenceImagePolicy {
         return ReferenceEnrollmentStatus.READY
     }
 
-    fun contentHash(image: Bitmap): String {
-        val width = image.width.coerceAtLeast(1)
-        val height = image.height.coerceAtLeast(1)
-        val pixels = IntArray(width * height)
-        image.getPixels(pixels, 0, width, 0, 0, width, height)
+    fun contentHash(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
 
-        val digest = MessageDigest.getInstance("SHA-256")
-        digest.update(width.toString().toByteArray())
-        digest.update(height.toString().toByteArray())
-
-        pixels.forEach { pixel ->
-            digest.update(byteArrayOf(
-                (pixel ushr 24).toByte(),
-                (pixel ushr 16).toByte(),
-                (pixel ushr 8).toByte(),
-                pixel.toByte()
-            ))
-        }
-
-        return digest.digest().joinToString("") { "%02x".format(it) }
+    fun pngBytes(image: Bitmap): ByteArray {
+        val output = ByteArrayOutputStream()
+        image.compress(Bitmap.CompressFormat.PNG, 100, output)
+        return output.toByteArray()
     }
 }

@@ -1,13 +1,11 @@
 package com.intramap.data.supabase
 
-import android.graphics.Bitmap
 import com.intramap.ar.ReferenceImageCandidate
+import com.intramap.ar.ReferenceImagePolicy
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.storage.storage
 import kotlinx.serialization.Serializable
-import java.io.ByteArrayOutputStream
-import java.security.MessageDigest
 
 @Serializable
 data class ReferenceImageRecord(
@@ -67,8 +65,8 @@ class ReferenceImageSource(private val client: SupabaseClient) {
         buildingId: String,
         versionId: String
     ) {
-        val bytes = pngBytes(candidate.image)
-        val hash = sha256(bytes)
+        val bytes = candidate.imageBytes
+        val hash = ReferenceImagePolicy.contentHash(bytes)
         val storagePath = "$buildingId/$versionId/${candidate.referenceKey}.png"
 
         client.storage.from("reference_images").upload(
@@ -94,16 +92,5 @@ class ReferenceImageSource(private val client: SupabaseClient) {
         client.postgrest["reference_images"].upsert(record) {
             onConflict = "building_id,version_id,reference_key"
         }
-    }
-
-    private fun pngBytes(image: Bitmap): ByteArray {
-        val output = ByteArrayOutputStream()
-        image.compress(Bitmap.CompressFormat.PNG, 100, output)
-        return output.toByteArray()
-    }
-
-    private fun sha256(bytes: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        return digest.joinToString("") { "%02x".format(it) }
     }
 }
