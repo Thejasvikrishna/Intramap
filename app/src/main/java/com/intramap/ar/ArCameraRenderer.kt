@@ -2,6 +2,7 @@ package com.intramap.ar
 
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
+import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Frame
 import com.google.ar.core.Session
 import java.nio.ByteBuffer
@@ -29,18 +30,25 @@ class ArCameraRenderer(
             }
         """
         const val FRAGMENT_SHADER = """
+            #extension GL_OES_EGL_image_external : require
             precision mediump float;
-            uniform sampler2D uTexture;
+            uniform samplerExternalOES uTexture;
             varying vec2 vTexCoord;
             void main() {
                 gl_FragColor = texture2D(uTexture, vTexCoord);
             }
         """
-        val QUAD = floatArrayOf(
-            -1f, -1f, 0f, 0f,
-             1f, -1f, 1f, 0f,
-            -1f,  1f, 0f, 1f,
-             1f,  1f, 1f, 1f
+        val POSITIONS = floatArrayOf(
+            -1f, -1f, 0f,
+             1f, -1f, 0f,
+            -1f,  1f, 0f,
+             1f,  1f, 0f
+        )
+        val SCREEN_UVS = floatArrayOf(
+            0f, 0f,
+            1f, 0f,
+            0f, 1f,
+            1f, 1f
         )
     }
 
@@ -48,7 +56,9 @@ class ArCameraRenderer(
     private var positionLocation = 0
     private var texCoordLocation = 0
     private var textureLocation = 0
-    private var quadBuffer: FloatBuffer? = null
+    private var positionBuffer: FloatBuffer? = null
+    private var screenUvBuffer: FloatBuffer? = null
+    private var cameraUvBuffer: FloatBuffer? = null
     private var cameraTextureId = 0
     private var width = 0
     private var height = 0
@@ -59,17 +69,16 @@ class ArCameraRenderer(
         positionLocation = GLES20.glGetAttribLocation(program, "aPosition")
         texCoordLocation = GLES20.glGetAttribLocation(program, "aTexCoord")
         textureLocation = GLES20.glGetUniformLocation(program, "uTexture")
-        quadBuffer = ByteBuffer.allocateDirect(QUAD.size * 4)
-            .order(ByteOrder.nativeOrder())
-            .asFloatBuffer()
-            .apply { put(QUAD); position(0) }
+        positionBuffer = directBuffer(POSITIONS)
+        screenUvBuffer = directBuffer(SCREEN_UVS)
+        cameraUvBuffer = directBuffer(FloatArray(8))
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
         cameraTextureId = ids[0]
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cameraTextureId)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, 0)
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -97,24 +106,43 @@ class ArCameraRenderer(
     }
 
     private fun drawCameraBackground(frame: Frame) {
-        val buffer = quadBuffer ?: return
+        val positions = positionBuffer ?: return
+        val screenUvs = screenUvBuffer ?: return
+        val cameraUvs = cameraUvBuffer ?: return
         if (program == 0 || cameraTextureId == 0) return
+
+        frame.transformCoordinates2d(
+            Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES,
+            screenUvs,
+            Coordinates2d.TEXTURE_NORMALIZED,
+            cameraUvs
+        )
+
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cameraTextureId)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
         GLES20.glUniform1i(textureLocation, 0)
-        buffer.position(0)
-        GLES20.glVertexAttribPointer(positionLocation, 3, GLES20.GL_FLOAT, false, 20, buffer)
+
+        positions.position(0)
+        GLES20.glVertexAttribPointer(positionLocation, 3, GLES20.GL_FLOAT, false, 0, positions)
         GLES20.glEnableVertexAttribArray(positionLocation)
-        buffer.position(3)
-        GLES20.glVertexAttribPointer(texCoordLocation, 2, GLES20.GL_FLOAT, false, 20, buffer)
+
+        cameraUvs.position(0)
+        GLES20.glVertexAttribPointer(texCoordLocation, 2, GLES20.GL_FLOAT, false, 0, cameraUvs)
         GLES20.glEnableVertexAttribArray(texCoordLocation)
+
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GLES20.glDisableVertexAttribArray(positionLocation)
         GLES20.glDisableVertexAttribArray(texCoordLocation)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, 0)
         GLES20.glUseProgram(0)
     }
+
+    private fun directBuffer(values: FloatArray): FloatBuffer =
+        ByteBuffer.allocateDirect(values.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply { put(values); position(0) }
 
     private fun buildProgram(): Int {
         val vertex = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)

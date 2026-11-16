@@ -44,7 +44,6 @@ class ArReferenceSession(
     private val closed = AtomicBoolean(false)
     private val lock = Any()
     private var session: Session? = null
-    private var adapter: ArCoreReferenceAdapter? = null
     private var aligner: ReferencePoseAligner? = null
     private val _state = MutableStateFlow(ArSessionEvent(ArSessionState.IDLE,"AR not started."))
     val state: StateFlow<ArSessionEvent> = _state
@@ -74,7 +73,6 @@ class ArReferenceSession(
                 created.resume()
                 session = created
                 val token = created.sessionId ?: "ar-session-${System.nanoTime()}"
-                adapter = ArCoreReferenceAdapter(buildingId,versionId,token)
                 aligner = ReferencePoseAligner(
                     Building(buildingId,"","",emptyList(),emptyList(),emptyList()),versionId,token,registrations
                 )
@@ -117,12 +115,13 @@ class ArReferenceSession(
     fun onFrameReady(frame: Frame) {
         if (closed.get()) return
         _frames.tryEmit(frame)
-        val currentAdapter = adapter ?: return
         val currentAligner = aligner ?: return
         val now = SystemClock.elapsedRealtime()
         for (image in frame.getUpdatedTrackables(com.google.ar.core.AugmentedImage::class.java)) {
             val reference = registrations.firstOrNull { it.referenceKey == image.name } ?: continue
-            val observation = currentAdapter.observation(frame,image,reference,now,now) ?: continue
+            val observation = ArCoreReferenceObservation.from(
+                frame,image,reference,now,now
+            ) ?: continue
             onObservation(currentAligner.observe(observation,now))
         }
     }
@@ -138,7 +137,7 @@ class ArReferenceSession(
     private fun closeQuietly() {
         synchronized(lock) {
             session?.let { try { it.close() } catch (_: Exception) {} }
-            session = null; adapter = null; aligner = null
+            session = null; aligner = null
         }
     }
 
