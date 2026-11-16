@@ -2,6 +2,7 @@ package com.intramap.ui.navigation
 
 import android.Manifest
 import android.app.Activity
+import android.opengl.GLSurfaceView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -10,11 +11,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.intramap.ar.ArAvailability
 import com.intramap.ar.ArAvailabilityChecker
+import com.intramap.ar.ArCameraRenderer
 import com.intramap.ar.ArReferenceSession
 import com.intramap.ar.ArSessionState
 import com.intramap.data.model.Building
@@ -57,33 +60,51 @@ fun ArReferenceCameraScreen(
             session?.close()
         }
     }
-    Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Reference positioning",style = MaterialTheme.typography.titleLarge)
-        Text(status)
-        Text("State: ${state.state}")
-        when (availability) {
-            ArAvailability.Supported -> {
-                if (!permission) {
-                    Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Grant camera permission") }
-                } else {
-                    Button(enabled = session == null || state.state in listOf(ArSessionState.IDLE,ArSessionState.FAILED,ArSessionState.CLOSED),onClick = {
-                        val created = ArReferenceSession(context,building.buildingId,versionId,registrations) { result ->
-                            if (result is ReferenceAlignmentResult.Accepted) onAcceptedPose(result.candidate.cameraMapPose)
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Reference positioning",style = MaterialTheme.typography.titleLarge)
+            Text(status)
+            Text("State: ${state.state}")
+            when (availability) {
+                ArAvailability.Supported -> {
+                    if (!permission) {
+                        Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Grant camera permission") }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(enabled = session == null || state.state in listOf(ArSessionState.IDLE,ArSessionState.FAILED,ArSessionState.CLOSED),onClick = {
+                                val created = ArReferenceSession(context,building.buildingId,versionId,registrations) { result ->
+                                    if (result is ReferenceAlignmentResult.Accepted) onAcceptedPose(result.candidate.cameraMapPose)
+                                }
+                                session = created
+                                status = if (created.start()) "AR started. Scan a registered reference image." else created.state.value.message
+                            }) { Text("Start AR positioning") }
+                            if (session != null) {
+                                OutlinedButton(onClick = { session?.close(); session = null; status = "AR closed." }) { Text("Stop") }
+                            }
                         }
-                        session = created
-                        status = if (created.start()) "AR started. Scan a registered reference image." else created.state.value.message
-                    }) { Text("Start AR positioning") }
+                    }
                 }
+                is ArAvailability.InstallNeeded, is ArAvailability.UpdateNeeded ->
+                    Text("Install or update Google Play Services for AR, then reopen this screen.")
+                ArAvailability.Unsupported -> Text("This device does not support ARCore.")
+                is ArAvailability.Error -> Text(availability.message,color = MaterialTheme.colorScheme.error)
+                null -> Text("Checking AR availability…")
             }
-            is ArAvailability.InstallNeeded, is ArAvailability.UpdateNeeded ->
-                Text("Install or update Google Play Services for AR, then reopen this screen.")
-            ArAvailability.Unsupported -> Text("This device does not support ARCore.")
-            is ArAvailability.Error -> Text(availability.message,color = MaterialTheme.colorScheme.error)
-            null -> Text("Checking AR availability…")
         }
-        if (session != null) {
-            Button(onClick = { session?.close(); session = null; status = "AR closed." }) { Text("Stop AR") }
-            Text("Camera preview and GL rendering are not implemented in this screen yet.")
+        val activeSession = session
+        if (activeSession != null && state.state == ArSessionState.RUNNING) {
+            key(activeSession) {
+                AndroidView(factory = { preview ->
+                    GLSurfaceView(preview).apply {
+                        setEGLContextClientVersion(2)
+                        preserveEGLContextOnPause = true
+                        setRenderer(ArCameraRenderer({ activeSession }, { frame -> activeSession.onFrameReady(frame) }))
+                        renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                    }
+                },onRelease = { activeSession.pause() },modifier = Modifier.fillMaxSize())
+            }
+        } else {
+            Box(Modifier.fillMaxSize())
         }
     }
 }

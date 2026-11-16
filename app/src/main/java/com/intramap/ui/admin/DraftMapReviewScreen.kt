@@ -19,6 +19,7 @@ import com.intramap.data.supabase.DraftReviewSnapshot
 import com.intramap.domain.mapping.DraftMapEdits
 import com.intramap.navigation.validateNavigationMap
 import com.intramap.ui.map.InteractiveIndoorMap
+import com.intramap.ui.vision.ReferenceImageEnrollmentScreen
 import io.github.jan.supabase.SupabaseClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -43,6 +44,7 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
     var moving by remember { mutableStateOf(false) }
     var joinOrigin by remember { mutableStateOf<String?>(null) }
     var joinVerified by remember { mutableStateOf(false) }
+    var enrollmentOpen by remember(versionId) { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var requiresReload by remember { mutableStateOf(false) }
@@ -120,6 +122,12 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
                 finally { busy = false }
             }
         }) { Text("Publish") } },dismissButton = { TextButton(onClick = { confirmPublish = false }) { Text("Cancel") } })
+    if (enrollmentOpen && building != null) {
+        ReferenceImageEnrollmentScreen(client,owner.id,versionId,"reference_${selectedId ?: "unselected"}",floorId,
+            physicalWidthM = 0.2f,mapX = selected?.x?.toDouble() ?: 0.0,mapY = selected?.y?.toDouble() ?: 0.0,
+            mapHeadingDeg = 0.0,onDone = { enrollmentOpen = false; reload++ })
+        return
+    }
     Scaffold(topBar = { TopAppBar(title = { Text("Draft map · ${owner.name}") },navigationIcon = { TextButton(enabled = !busy,onClick = { request("leave") }) { Text("Back") } }) },
         bottomBar = { Surface(tonalElevation = 3.dp) {
             Column(Modifier.fillMaxWidth().navigationBarsPadding().heightIn(max = maxHeight).verticalScroll(rememberScrollState()).padding(12.dp),verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -148,7 +156,7 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
                     TextButton(enabled = !busy,onClick = { request("reload") }) { Text("Reload") }
                 }
                 if (building != null) key(current?.fingerprint,building) {
-                    DraftFloorLinkEditor(building,selected?.takeIf { it.floorId == floorId },
+                    com.intramap.ui.admin.DraftFloorLinkEditor(building,selected?.takeIf { it.floorId == floorId },
                         enabled = !dirty && !requiresReload && errors.isEmpty() && current != null,busy = busy,
                         onLink = { from,to,kind -> changeFloorLink { fingerprint -> linkWriter.link(versionId,fingerprint,from,to,kind,true) } },
                         onRemove = { edge -> changeFloorLink { fingerprint -> linkWriter.remove(versionId,fingerprint,edge,true) } })
@@ -166,6 +174,7 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
                             TextButton(enabled = !busy && !requiresReload,onClick = { edit { it.renameNode(node.nodeId,label,type) } }) { Text("Apply name/type") }
                             TextButton(enabled = !busy && !requiresReload,onClick = { moving = !moving; joinOrigin = null }) { Text(if (moving) "Cancel move" else "Move by map tap") }
                             TextButton(enabled = !busy && !requiresReload,onClick = { joinOrigin = node.nodeId; joinVerified = false; moving = false }) { Text("Join from here") }
+                            TextButton(enabled = !busy && !requiresReload,onClick = { enrollmentOpen = true }) { Text("Register reference image") }
                         }
                         if (moving) Text("Tap the corrected position on the map. Maximum 3 m; visual-reference floors may require re-registration.")
                         graph.edges.filter { it.sourceNodeId == node.nodeId || it.destinationNodeId == node.nodeId }.forEach { edge ->
