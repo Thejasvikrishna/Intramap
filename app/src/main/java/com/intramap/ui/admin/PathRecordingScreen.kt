@@ -83,6 +83,7 @@ private fun RecoverableRecorder(client: SupabaseClient, account: String, buildin
     var leave by remember { mutableStateOf(false) }
     var discard by remember { mutableStateOf(false) }
     var resume by remember { mutableStateOf(false) }
+    var cameraMode by remember { mutableStateOf(true) }
     var markerName by remember { mutableStateOf("") }
     var markerType by remember { mutableStateOf("ROOM") }
     var status by remember { mutableStateOf("Checking saved recording...") }
@@ -117,10 +118,11 @@ private fun RecoverableRecorder(client: SupabaseClient, account: String, buildin
                 trace = WalkingTrace.restore(saved.samples); points = saved.samples
                 recordingId = saved.recordingId; revision = saved.revision; savedRevision = saved.revision
                 savedCount = points.size; uploadAttempted = saved.uploadAttempted; submitted = saved.submitted
+                cameraMode = saved.samples.firstOrNull()?.marker != "START"
                 reviewing = true
                 status = if (submitted) "Saved submission receipt recovered. The server copy remains available."
-                    else "Saved trace recovered and paused. It is not a live position fix."
-            } else status = "Create a recording, then start tracking and align its local direction."
+                    else "Saved trace recovered for review. Unknown/camera sources cannot resume a new camera frame."
+            } else status = "Choose camera or sensors, then create a recording."
             loaded = true
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { loadError = true; status = "Saved trace could not be read. It has not been overwritten. Retry recovery or explicitly discard the local copy." }
@@ -128,7 +130,7 @@ private fun RecoverableRecorder(client: SupabaseClient, account: String, buildin
     val pause by rememberUpdatedState(newValue = {
         if (recordingId != null && !submitted) {
             reviewing = true; persist()
-            status = "Recording paused. Return to the last recorded position before resuming."
+            status = "Recording paused. Camera segments cannot bridge session interruptions."
         }
     })
     DisposableEffect(owner) {
@@ -136,7 +138,7 @@ private fun RecoverableRecorder(client: SupabaseClient, account: String, buildin
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer) }
     }
-    fun back() { if (recordingId != null || busy || loadError) leave = true else onBack() }
+    fun back() { if (recordingId != null || busy || loadError) { reviewing = true; leave = true } else onBack() }
     BackHandler { back() }
     if (leave) AlertDialog(onDismissRequest = { leave = false }, title = { Text("Save and leave?") },
         text = { Text("A local checkpoint is saved before leaving. Remote upload is separate. If recovery failed, leaving preserves the existing file without overwriting it.") },
@@ -165,56 +167,68 @@ private fun RecoverableRecorder(client: SupabaseClient, account: String, buildin
             }
         }) { Text("Remove local copy") } }, dismissButton = { TextButton(onClick = { discard = false }) { Text("Cancel") } })
     if (resume) AlertDialog(onDismissRequest = { resume = false }, title = { Text("Resume from the saved endpoint?") },
-        text = { Text("Stand at the last recorded physical position. Align the phone to the same original local map direction when restarting tracking. A saved trace cannot detect where you are now.") },
-        confirmButton = { TextButton(onClick = { reviewing = false; resume = false; status = "Restart tracking and align the original local direction." }) { Text("I am at the endpoint") } },
+        text = { Text("Stand at the last recorded physical position. Align the phone to the same original local map direction when restarting sensor tracking. A saved trace cannot detect where you are now.") },
+        confirmButton = { TextButton(onClick = { reviewing = false; resume = false; status = "Restart sensors and align the original local direction." }) { Text("I am at the endpoint") } },
         dismissButton = { TextButton(onClick = { resume = false }) { Text("Cancel") } })
 
     Scaffold(topBar = { TopAppBar(title = { Text("Walk to map · $floorKey") }, navigationIcon = { TextButton(onClick = { back() }) { Text("Back") } }) },
         bottomBar = {
             Surface(tonalElevation = 4.dp,shape = RoundedCornerShape(topStart = 24.dp,topEnd = 24.dp)) {
-                Column(Modifier.fillMaxWidth().navigationBarsPadding().heightIn(max = 400.dp).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.fillMaxWidth().navigationBarsPadding().heightIn(max = 440.dp).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(status)
-                    Text("${(points.size-1).coerceAtLeast(0)} measured step events · %.1f m estimated".format(trace?.distanceM ?: 0.0))
+                    Text("${(points.size-1).coerceAtLeast(0)} motion samples · %.1f m estimated".format(trace?.distanceM ?: 0.0))
                     if (recordingId != null) Text("Local checkpoint: $savedCount / ${points.size} samples" + if (savedRevision < revision) " · saving" else " · saved",style = MaterialTheme.typography.labelSmall)
                     if (!loaded && !loadError) LinearProgressIndicator(Modifier.fillMaxWidth())
                     if (loadError) TextButton(onClick = { reload++ }) { Text("Retry recovery") }
                     if (saveError) Button(enabled = !busy,onClick = { persist() }) { Text("Retry local save") }
-                    if (recordingId == null && loaded) Button(enabled = !busy,onClick = {
-                        busy = true
-                        scope.launch {
-                            try {
-                                val created = source.startRecording(buildingId,floorKey,startAnchorKey)
-                                recordingId = created.id
-                                trace = WalkingTrace(SystemClock.elapsedRealtime()); points = trace!!.snapshot()
-                                persist()?.await()
-                                status = "Start tracking. Forward defines this recording's local map-up direction."
-                            } catch (e: CancellationException) { throw e }
-                            catch (_: Exception) { status = "Could not create or checkpoint recording. Check sign-in, connectivity and storage." }
-                            finally { busy = false }
+                    if (recordingId == null && loaded) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = cameraMode, enabled = !busy, onClick = { cameraMode = true }, label = { Text("Live camera") })
+                            FilterChip(selected = !cameraMode, enabled = !busy, onClick = { cameraMode = false }, label = { Text("Sensors") })
                         }
-                    }) { Text("Create walking recording") }
+                        Button(enabled = !busy,onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    val created = source.startRecording(buildingId,floorKey,startAnchorKey)
+                                    recordingId = created.id
+                                    val initial = WalkingSample(0.0,0.0,SystemClock.elapsedRealtime(),0.0,if (cameraMode) "CAMERA_START" else "START")
+                                    trace = WalkingTrace.restore(listOf(initial)); points = trace!!.snapshot()
+                                    persist()?.await()
+                                    status = "Start tracking. Align Forward to this recording's intended local map-up direction."
+                                } catch (e: CancellationException) { throw e }
+                                catch (_: Exception) { status = "Could not create or checkpoint recording. Check sign-in, connectivity and storage." }
+                                finally { busy = false }
+                            }
+                        }) { Text("Create walking recording") }
+                    }
                     if (recordingId != null && !submitted) {
                         if (!reviewing && !uploadAttempted) {
-                            NavigationMotionControls(enabled = loaded && !busy && !leave && !discard && !resume && !saveError,
-                                onStep = { length,heading ->
-                                    if (!busy && !reviewing && !saveError && !leave && !discard && !resume &&
-                                        trace?.step(length,heading,maxOf(SystemClock.elapsedRealtime(),points.last().timeMs+1)) == true) {
-                                        points = trace!!.snapshot(); persist()
-                                    }
-                                },onRunningChanged = { running = it })
+                            val recordMotion: (Double,Double) -> Unit = { length,heading ->
+                                if (!busy && !reviewing && !saveError && !leave && !discard && !resume &&
+                                    trace?.step(length,heading,maxOf(SystemClock.elapsedRealtime(),points.last().timeMs+1)) == true) {
+                                    points = trace!!.snapshot(); persist()
+                                    if (points.size >= 10000) { reviewing = true; status = "Sample limit reached. Review and submit this segment." }
+                                }
+                            }
+                            val active = loaded && !busy && !leave && !discard && !resume && !saveError
+                            if (cameraMode) CameraMappingControls(enabled = active, onStep = recordMotion,
+                                onInterrupted = { message -> reviewing = true; persist(); status = message }, onRunningChanged = { running = it })
+                            else NavigationMotionControls(enabled = active,onStep = recordMotion,onRunningChanged = { running = it })
                             OutlinedTextField(markerName,{ markerName = it.take(120) },label = { Text("Place or junction name") },enabled = !busy && !saveError,modifier = Modifier.fillMaxWidth())
                             Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 listOf("ROOM","ENTRANCE","JUNCTION","TURN","STAIRS","ELEVATOR").forEach { type ->
                                     FilterChip(selected = markerType == type,onClick = { markerType = type },label = { Text(type) })
                                 }
                             }
-                            OutlinedButton(enabled = !busy && !saveError && markerName.isNotBlank(),onClick = {
+                            OutlinedButton(enabled = !busy && !saveError && markerName.isNotBlank() && (!cameraMode || running),onClick = {
                                 if (trace?.mark(markerType,markerName) == true) { points = trace!!.snapshot(); markerName = ""; persist() }
                             }) { Text("Mark current place") }
                             Button(enabled = !busy && points.size > 1,onClick = { reviewing = true; persist() }) { Text("Stop and review trace") }
                         } else {
-                            Text("Review the relative trace. It still requires map alignment and explicit joins before publication.")
-                            if (!uploadAttempted) OutlinedButton(enabled = !busy && !saveError,onClick = { resume = true }) { Text("Resume at saved endpoint") }
+                            Text("Review the relative trace. It requires alignment and explicit joins before publication.")
+                            if (cameraMode) Text("Camera session ended. Submit this segment or start another; a new camera frame is not joined automatically.",style = MaterialTheme.typography.bodySmall)
+                            if (!uploadAttempted && !cameraMode) OutlinedButton(enabled = !busy && !saveError,onClick = { resume = true }) { Text("Resume sensors at saved endpoint") }
                             Button(enabled = !busy && !saveError && points.size > 1,onClick = {
                                 busy = true; uploadAttempted = true
                                 val id = requireNotNull(recordingId); val snapshot = points.toList()
@@ -239,8 +253,8 @@ private fun RecoverableRecorder(client: SupabaseClient, account: String, buildin
             }
         }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp)) {
-            Text("Relative estimate · assumed 0.70 m stride · not ARCore-aligned",style = MaterialTheme.typography.labelSmall)
-            Text(if (running && !reviewing) "Tracking started; samples require direction alignment." else "Tracking paused or awaiting alignment.",style = MaterialTheme.typography.labelSmall)
+            Text(if (cameraMode) "Camera-derived relative route · not a wall/floor-plan reconstruction" else "Sensor relative estimate · assumed 0.70 m stride",style = MaterialTheme.typography.labelSmall)
+            Text(if (running && !reviewing) "Tracking active; review geometry and direction alignment." else "Tracking paused or awaiting alignment.",style = MaterialTheme.typography.labelSmall)
             WalkingTracePreview(points,Modifier.fillMaxWidth().weight(1f))
         }
     }
