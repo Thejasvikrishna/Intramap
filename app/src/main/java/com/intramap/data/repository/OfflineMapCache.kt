@@ -1,6 +1,6 @@
 package com.intramap.data.repository
 
-import com.intramap.data.model.Building
+import com.intramap.data.model.PublishedMap
 import kotlinx.serialization.json.Json
 import java.io.File
 
@@ -9,7 +9,7 @@ class OfflineMapCache(
     private val directory: File,
     private val json: Json
 ) {
-    fun load(): List<Building> {
+    fun load(): List<PublishedMap> {
         if (!directory.exists()) return emptyList()
 
         return directory.listFiles()
@@ -17,25 +17,25 @@ class OfflineMapCache(
             .filter { it.isFile && it.extension == "json" }
             .mapNotNull { file ->
                 runCatching {
-                    json.decodeFromString<Building>(file.readText())
+                    json.decodeFromString<PublishedMap>(file.readText())
                 }.getOrNull()
             }
     }
 
-    fun save(buildings: List<Building>) {
+    fun save(maps: List<PublishedMap>) {
         directory.mkdirs()
 
-        val validFileNames = buildings.map { "${it.buildingId}.json" }.toSet()
+        val validFileNames = maps.map { "${it.building.buildingId}.json" }.toSet()
 
         directory.listFiles()
             .orEmpty()
             .filter { it.isFile && it.extension == "json" && it.name !in validFileNames }
             .forEach { it.delete() }
 
-        buildings.forEach { building ->
+        maps.forEach { map ->
             runCatching {
-                File(directory, "${building.buildingId}.json")
-                    .writeText(json.encodeToString(Building.serializer(), building))
+                File(directory, "${map.building.buildingId}.json")
+                    .writeText(json.encodeToString(PublishedMap.serializer(), map))
             }
         }
     }

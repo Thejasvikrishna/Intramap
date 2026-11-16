@@ -3,6 +3,7 @@ package com.intramap.data.supabase
 import com.intramap.data.model.Building
 import com.intramap.data.model.Floor
 import com.intramap.data.model.LocationNode
+import com.intramap.data.model.PublishedMap
 import com.intramap.data.model.PathEdge
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
@@ -53,7 +54,7 @@ import kotlinx.serialization.Serializable
 /** Reads only published map versions (enforced server-side by RLS). */
 class SupabaseMapDataSource(private val client: SupabaseClient) {
 
-    suspend fun fetchPublishedBuildings(): List<Building> {
+    suspend fun fetchPublishedMaps(): List<PublishedMap> {
         val versions = client.from("map_versions").select {
             filter { eq("status", "published") }
         }.decodeList<VersionRow>()
@@ -61,35 +62,38 @@ class SupabaseMapDataSource(private val client: SupabaseClient) {
 
         val buildings = client.from("buildings").select().decodeList<BuildingRow>().associateBy { it.id }
 
-        return versions.mapNotNull { v ->
-            val b = buildings[v.buildingId] ?: return@mapNotNull null
+        return versions.mapNotNull { version ->
+            val buildingRow = buildings[version.buildingId] ?: return@mapNotNull null
             val floors = client.from("floors").select {
-                filter { eq("version_id", v.id) }
+                filter { eq("version_id", version.id) }
             }.decodeList<FloorRow>()
             val nodes = client.from("map_nodes").select {
-                filter { eq("version_id", v.id) }
+                filter { eq("version_id", version.id) }
             }.decodeList<NodeRow>()
             val edges = client.from("map_edges").select {
-                filter { eq("version_id", v.id) }
+                filter { eq("version_id", version.id) }
             }.decodeList<EdgeRow>()
 
-            Building(
-                buildingId = b.buildingKey,
-                buildingName = b.name,
-                description = b.description,
-                floors = floors.sortedBy { it.floorNumber }.map {
-                    Floor(it.floorKey, it.floorNumber, it.name, it.widthM, it.heightM)
-                },
-                nodes = nodes.map {
-                    LocationNode(
-                        nodeId = it.nodeKey, floorId = it.floorKey, name = it.name, type = it.nodeType,
-                        x = it.x, y = it.y, connectorGroupId = it.connectorGroupId,
-                        keywords = it.keywords, landmarkDescription = it.description
-                    )
-                },
-                edges = edges.map {
-                    PathEdge(it.edgeKey, it.fromKey, it.toKey, it.distanceM, it.accessibilityType, it.isAvailable)
-                }
+            PublishedMap(
+                building = Building(
+                    buildingId = buildingRow.buildingKey,
+                    buildingName = buildingRow.name,
+                    description = buildingRow.description,
+                    floors = floors.sortedBy { it.floorNumber }.map {
+                        Floor(it.floorKey, it.floorNumber, it.name, it.widthM, it.heightM)
+                    },
+                    nodes = nodes.map {
+                        LocationNode(
+                            nodeId = it.nodeKey, floorId = it.floorKey, name = it.name, type = it.nodeType,
+                            x = it.x, y = it.y, connectorGroupId = it.connectorGroupId,
+                            keywords = it.keywords, landmarkDescription = it.description
+                        )
+                    },
+                    edges = edges.map {
+                        PathEdge(it.edgeKey, it.fromKey, it.toKey, it.distanceM, it.accessibilityType, it.isAvailable)
+                    }
+                ),
+                versionId = version.id
             )
         }
     }

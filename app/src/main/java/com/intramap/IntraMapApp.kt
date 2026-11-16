@@ -24,19 +24,26 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.intramap.ar.ArAvailability
 import com.intramap.data.model.Building
 import com.intramap.data.repository.MapRepository
+import com.intramap.data.supabase.ReferenceRegistrationSource
+import com.intramap.data.supabase.SupabaseClientFactory
+import com.intramap.domain.localization.RegisteredReferencePose
 import com.intramap.localization.lab.LocalizationLabEngine
+import com.intramap.navigation.NavigationSession
 import com.intramap.ui.admin.AdminMappingScreen
 import com.intramap.ui.admin.PathRecordingScreen
+import com.intramap.ui.auth.EditorAuthGate
 import com.intramap.ui.diagnostics.NavigationDiagnosticsScreen
 import com.intramap.ui.lab.LocalizationLabScreen
 import com.intramap.ui.map.MapScreen
+import com.intramap.ui.navigation.ArPoseResult
+import com.intramap.ui.navigation.ArReferenceCameraScreen
 import com.intramap.ui.pdr.PdrScreen
 import com.intramap.ui.vision.LandmarkScannerScreen
 import com.intramap.vision.CameraLandmarkObservation
-import com.intramap.navigation.NavigationSession
-import com.intramap.ui.auth.EditorAuthGate
+
 @Composable
 fun IntraMapApp(repo: MapRepository) {
     val nav = rememberNavController()
@@ -143,6 +150,15 @@ fun IntraMapApp(repo: MapRepository) {
             val buildingId = entry.arguments?.getString("bid").orEmpty()
             val floorId = entry.arguments?.getString("fid").orEmpty()
             val building = repo.getBuilding(buildingId)
+            val published = repo.getPublishedMap(buildingId)
+
+            val arPoseFlow = remember(entry) {
+                entry.savedStateHandle.getStateFlow<Bundle?>(
+                    ArPoseResult.KEY,
+                    null
+                )
+            }
+            val pendingArPoseBundle by arPoseFlow.collectAsState()
 
             if (building == null || building.floors.none { it.floorId == floorId }) {
                 NavigationErrorScreen("Building or floor not found.") { nav.popBackStack() }
@@ -150,11 +166,84 @@ fun IntraMapApp(repo: MapRepository) {
                 MapScreen(
                     building = building,
                     initialFloorId = floorId,
+                    versionId = published?.versionId,
+                    pendingArPose = ArPoseResult.fromBundle(pendingArPoseBundle),
+                    onArPoseConsumed = {
+                        entry.savedStateHandle.set<Bundle?>(ArPoseResult.KEY, null)
+                    },
+                    onOpenArPositioning = {
+                        nav.navigate("ar/${building.buildingId}")
+                    },
                     onBack = { nav.popBackStack() },
                     onOpenDiagnostics = {
                         nav.navigate("diagnostics/$buildingId/$floorId")
                     }
                 )
+            }
+        }
+
+        composable(
+            route = "ar/{bid}",
+            arguments = listOf(navArgument("bid") { type = NavType.StringType })
+        ) { entry ->
+            val buildingId = entry.arguments?.getString("bid").orEmpty()
+            val building = repo.getBuilding(buildingId)
+            val published = repo.getPublishedMap(buildingId)
+            val client = SupabaseClientFactory.client
+
+            var registrations by remember {
+                mutableStateOf<List<RegisteredReferencePose>?>(null)
+            }
+            var message by remember { mutableStateOf<String?>(null) }
+
+            LaunchedEffect(buildingId, published?.versionId, client) {
+                val versionId = published?.versionId
+                when {
+                    building == null -> message = "Building not found."
+                    versionId == null -> message = "AR positioning requires a published map version."
+                    client == null -> message = "Supabase is not configured."
+                    else -> runCatching {
+                        ReferenceRegistrationSource(client).registrations(buildingId, versionId)
+                    }.onSuccess { loaded ->
+                        registrations = loaded
+                        if (loaded.isEmpty()) {
+                            message = "No reference images are registered for this map version."
+                        }
+                    }.onFailure {
+                        message = it.message ?: "Could not load reference images."
+                    }
+                }
+            }
+
+            if (building == null) {
+                NavigationErrorScreen("Building not found.") { nav.popBackStack() }
+            } else {
+                Column(Modifier.padding(16.dp)) {
+                    TextButton(onClick = { nav.popBackStack() }) { Text("Back") }
+                    message?.let { Text(it) }
+                    val versionId = published?.versionId
+                    if (versionId != null) {
+                        ArReferenceCameraScreen(
+                            building = building,
+                            versionId = versionId,
+                            registrations = registrations.orEmpty(),
+                            onAcceptedPose = { floorId, pose ->
+                                nav.previousBackStackEntry?.savedStateHandle?.set<Bundle>(
+                                    ArPoseResult.KEY,
+                                    ArPoseResult.bundle(
+                                        ArPoseResult.Pose(
+                                            floorId = floorId,
+                                            x = pose.x,
+                                            y = pose.y,
+                                            headingDeg = pose.headingDeg
+                                        )
+                                    )
+                                )
+                                nav.popBackStack()
+                            }
+                        )
+                    }
+                }
             }
         }
 
@@ -198,42 +287,27 @@ fun IntraMapApp(repo: MapRepository) {
         composable(
             route = "record/{bid}/{fid}",
             arguments = listOf(
-                navArgument("bid") {
-                    type = NavType.StringType
-                },
-                navArgument("fid") {
-                    type = NavType.StringType
-                }
+                navArgument("bid") { type = NavType.StringType },
+                navArgument("fid") { type = NavType.StringType }
             )
         ) { entry ->
-            val buildingId = entry.arguments
-                ?.getString("bid")
-                .orEmpty()
-
-            val floorId = entry.arguments
-                ?.getString("fid")
-                .orEmpty()
+            val buildingId = entry.arguments?.getString("bid").orEmpty()
+            val floorId = entry.arguments?.getString("fid").orEmpty()
 
             if (buildingId.isBlank() || floorId.isBlank()) {
                 NavigationErrorScreen(
                     message = "Building or floor identifier is missing.",
-                    onBack = {
-                        nav.popBackStack()
-                    }
+                    onBack = { nav.popBackStack() }
                 )
             } else {
                 EditorAuthGate(
-                    onBack = {
-                        nav.popBackStack()
-                    }
+                    onBack = { nav.popBackStack() }
                 ) {
                     PathRecordingScreen(
                         buildingId = buildingId,
                         floorKey = floorId,
                         startAnchorKey = null,
-                        onBack = {
-                            nav.popBackStack()
-                        }
+                        onBack = { nav.popBackStack() }
                     )
                 }
             }
@@ -284,7 +358,8 @@ fun IntraMapApp(repo: MapRepository) {
                 NavigationErrorScreen("Building or localization data not found.") { nav.popBackStack() }
             } else {
                 val engine = labEngines.getOrPut(buildingId) {
-                    val startingNode = building.nodes.firstOrNull { it.type == "ENTRANCE" } ?: building.nodes.first()
+                    val startingNode = building.nodes.firstOrNull { it.type == "ENTRANCE" }
+                        ?: building.nodes.first()
                     LocalizationLabEngine(building).apply { reset(startingNode.nodeId) }
                 }
 

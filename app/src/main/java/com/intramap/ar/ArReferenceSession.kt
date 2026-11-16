@@ -12,9 +12,11 @@ import com.google.ar.core.exceptions.UnavailableApkTooOldException
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
+import com.intramap.data.model.Building
 import com.intramap.domain.localization.ReferenceAlignmentResult
 import com.intramap.domain.localization.ReferencePoseAligner
 import com.intramap.domain.localization.RegisteredReferencePose
+import com.intramap.vision.ArCoreReferenceAdapter
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,9 +47,13 @@ class ArReferenceSession(
     private val lock = Any()
     private var session: Session? = null
     private var aligner: ReferencePoseAligner? = null
-    private val _state = MutableStateFlow(ArSessionEvent(ArSessionState.IDLE,"AR not started."))
+    private var adapter: ArCoreReferenceAdapter? = null
+    private val _state = MutableStateFlow(ArSessionEvent(ArSessionState.IDLE, "AR not started."))
     val state: StateFlow<ArSessionEvent> = _state
-    private val _frames = MutableSharedFlow<Frame>(extraBufferCapacity = 1,onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val _frames = MutableSharedFlow<Frame>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val frames: SharedFlow<Frame> = _frames
 
     init {
@@ -64,7 +70,7 @@ class ArReferenceSession(
         if (closed.get()) return false
         synchronized(lock) {
             if (_state.value.state == ArSessionState.RUNNING) return true
-            _state.value = ArSessionEvent(ArSessionState.STARTING,"Starting AR…")
+            _state.value = ArSessionEvent(ArSessionState.STARTING, "Starting AR…")
             try {
                 val created = Session(appContext)
                 val config = Config(created)
@@ -73,10 +79,17 @@ class ArReferenceSession(
                 created.resume()
                 session = created
                 val token = created.sessionId ?: "ar-session-${System.nanoTime()}"
+                adapter = ArCoreReferenceAdapter(buildingId, versionId, token)
                 aligner = ReferencePoseAligner(
-                    Building(buildingId,"","",emptyList(),emptyList(),emptyList()),versionId,token,registrations
+                    Building(buildingId, "", "", emptyList(), emptyList(), emptyList()),
+                    versionId,
+                    token,
+                    registrations
                 )
-                _state.value = ArSessionEvent(ArSessionState.RUNNING,"Point the camera at a registered reference image.")
+                _state.value = ArSessionEvent(
+                    ArSessionState.RUNNING,
+                    "Point the camera at a registered reference image."
+                )
                 return true
             } catch (e: UnavailableArcoreNotInstalledException) {
                 fail("ARCore is not installed.")
@@ -98,16 +111,24 @@ class ArReferenceSession(
     fun pause() {
         synchronized(lock) {
             val current = session ?: return
-            try { current.pause(); _state.value = ArSessionEvent(ArSessionState.PAUSED,"AR paused.") }
-            catch (_: SessionPausedException) { _state.value = ArSessionEvent(ArSessionState.PAUSED,"AR already paused.") }
+            try {
+                current.pause()
+                _state.value = ArSessionEvent(ArSessionState.PAUSED, "AR paused.")
+            } catch (_: SessionPausedException) {
+                _state.value = ArSessionEvent(ArSessionState.PAUSED, "AR already paused.")
+            }
         }
     }
 
     fun resume() {
         synchronized(lock) {
             val current = session ?: return
-            try { current.resume(); _state.value = ArSessionEvent(ArSessionState.RUNNING,"AR resumed.") }
-            catch (e: CameraNotAvailableException) { fail("Camera unavailable on resume.") }
+            try {
+                current.resume()
+                _state.value = ArSessionEvent(ArSessionState.RUNNING, "AR resumed.")
+            } catch (e: CameraNotAvailableException) {
+                fail("Camera unavailable on resume.")
+            }
         }
     }
 
@@ -115,34 +136,57 @@ class ArReferenceSession(
     fun onFrameReady(frame: Frame) {
         if (closed.get()) return
         _frames.tryEmit(frame)
+
         val currentAligner = aligner ?: return
+        val currentAdapter = adapter ?: return
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
         val now = SystemClock.elapsedRealtime()
+
         for (image in frame.getUpdatedTrackables(com.google.ar.core.AugmentedImage::class.java)) {
             val reference = registrations.firstOrNull { it.referenceKey == image.name } ?: continue
-            val observation = ArCoreReferenceObservation.from(
-                frame,image,reference,now,now
+            val capturedAtElapsedMs = arFrameTimestampToElapsedMs(
+                frameTimestampNanos = frame.timestamp,
+                nowElapsedNanos = nowNanos,
+                nowElapsedMs = now
             ) ?: continue
-            onObservation(currentAligner.observe(observation,now))
+
+            val observation = currentAdapter.observation(
+                frame = frame,
+                image = image,
+                reference = reference,
+                capturedAtElapsedMs = capturedAtElapsedMs,
+                nowElapsedMs = now
+            ) ?: continue
+
+            onObservation(currentAligner.observe(observation, now))
         }
     }
 
     fun trackingFailure(): TrackingFailureReason? = session?.let {
-        try { it.camera.trackingFailureReason } catch (_: Exception) { null }
+        try {
+            it.camera.trackingFailureReason
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun fail(message: String) {
-        closeQuietly(); _state.value = ArSessionEvent(ArSessionState.FAILED,message)
+        closeQuietly()
+        _state.value = ArSessionEvent(ArSessionState.FAILED, message)
     }
 
     private fun closeQuietly() {
         synchronized(lock) {
             session?.let { try { it.close() } catch (_: Exception) {} }
-            session = null; aligner = null
+            session = null
+            aligner = null
+            adapter = null
         }
     }
 
     override fun close() {
-        if (!closed.compareAndSet(false,true)) return
-        closeQuietly(); _state.value = ArSessionEvent(ArSessionState.CLOSED,"AR closed.")
+        if (!closed.compareAndSet(false, true)) return
+        closeQuietly()
+        _state.value = ArSessionEvent(ArSessionState.CLOSED, "AR closed.")
     }
 }

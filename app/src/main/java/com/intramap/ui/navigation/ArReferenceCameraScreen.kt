@@ -21,6 +21,7 @@ import com.intramap.ar.ArCameraRenderer
 import com.intramap.ar.ArReferenceSession
 import com.intramap.ar.ArSessionState
 import com.intramap.data.model.Building
+import com.intramap.domain.localization.PlanarPose
 import com.intramap.domain.localization.ReferenceAlignmentResult
 import com.intramap.domain.localization.RegisteredReferencePose
 
@@ -29,7 +30,7 @@ fun ArReferenceCameraScreen(
     building: Building,
     versionId: String,
     registrations: List<RegisteredReferencePose>,
-    onAcceptedPose: (com.intramap.domain.localization.PlanarPose) -> Unit
+    onAcceptedPose: (floorId: String, pose: PlanarPose) -> Unit
 ) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
@@ -37,16 +38,23 @@ fun ArReferenceCameraScreen(
     var permission by remember { mutableStateOf(ArAvailabilityChecker.hasCameraPermission(context)) }
     var availability by remember { mutableStateOf<ArAvailability?>(null) }
     var session by remember { mutableStateOf<ArReferenceSession?>(null) }
-    var status by remember { mutableStateOf("AR reference positioning is unavailable until a supported AR session starts.") }
+    var status by remember {
+        mutableStateOf("AR reference positioning is unavailable until a supported AR session starts.")
+    }
     val state = session?.state?.collectAsState()?.value
         ?: com.intramap.ar.ArSessionEvent(com.intramap.ar.ArSessionState.IDLE, "AR not started.")
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
         permission = granted
         status = if (granted) "Camera permission granted. Start AR positioning." else "Camera permission is required."
     }
+
     LaunchedEffect(activity, permission) {
         if (activity != null) availability = ArAvailabilityChecker.check(activity)
     }
+
     DisposableEffect(owner, session) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -62,6 +70,7 @@ fun ArReferenceCameraScreen(
             session?.close()
         }
     }
+
     Column(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxWidth().padding(16.dp),
@@ -70,6 +79,7 @@ fun ArReferenceCameraScreen(
             Text("Reference positioning", style = MaterialTheme.typography.titleLarge)
             Text(status)
             Text("State: ${state.state}")
+
             when (availability) {
                 ArAvailability.Supported -> {
                     if (!permission) {
@@ -92,7 +102,10 @@ fun ArReferenceCameraScreen(
                                         registrations
                                     ) { result ->
                                         if (result is ReferenceAlignmentResult.Accepted) {
-                                            onAcceptedPose(result.candidate.cameraMapPose)
+                                            onAcceptedPose(
+                                                result.candidate.floorId,
+                                                result.candidate.cameraMapPose
+                                            )
                                         }
                                     }
                                     session = created
@@ -103,6 +116,7 @@ fun ArReferenceCameraScreen(
                                     }
                                 }
                             ) { Text("Start AR positioning") }
+
                             if (session != null) {
                                 OutlinedButton(onClick = {
                                     session?.close()
@@ -113,13 +127,16 @@ fun ArReferenceCameraScreen(
                         }
                     }
                 }
+
                 is ArAvailability.InstallNeeded, is ArAvailability.UpdateNeeded ->
                     Text("Install or update Google Play Services for AR, then reopen this screen.")
+
                 ArAvailability.Unsupported -> Text("This device does not support ARCore.")
                 is ArAvailability.Error -> Text(availability.message, color = MaterialTheme.colorScheme.error)
                 null -> Text("Checking AR availability…")
             }
         }
+
         val activeSession = session
         if (activeSession != null && state.state == ArSessionState.RUNNING) {
             key(activeSession) {
