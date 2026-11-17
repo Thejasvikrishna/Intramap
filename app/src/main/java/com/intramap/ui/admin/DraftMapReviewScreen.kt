@@ -40,7 +40,8 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
     val writer = remember(client) { DraftMapEditSource(client) }
     val linkWriter = remember(client) { DraftFloorLinkSource(client) }
     val workspace = remember(client) { WalkingMapWorkspace(client) }
-    val uploader = remember { CloudinaryImageUploader(LocalContext.current) }
+    val context = LocalContext.current
+    val uploader = remember(context) { CloudinaryImageUploader(context) }
     val scope = rememberCoroutineScope()
     var snapshot by remember(versionId) { mutableStateOf<DraftReviewSnapshot?>(null) }
     var edits by remember(versionId) { mutableStateOf<DraftMapEdits?>(null) }
@@ -66,12 +67,13 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
     val maxHeight = (LocalConfiguration.current.screenHeightDp*0.45f).dp
     val building = edits?.current
     val selected = building?.nodes?.firstOrNull { it.nodeId == selectedId }
+    val selectedRecord = snapshot?.nodes?.firstOrNull { it.nodeKey == selected?.nodeId }
     val dirty = edits?.dirty == true
     val errors = remember(building) { building?.let { validateNavigationMap(it) }.orEmpty() }
     val complete = building != null && building.floors.isNotEmpty() && building.edges.isNotEmpty() && errors.isEmpty() &&
         !dirty && !requiresReload && reviewed.containsAll(building.floors.map { it.floorId })
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        val node = selected ?: return@rememberLauncherForActivityResult
+        val node = selectedRecord ?: return@rememberLauncherForActivityResult
         if (uri == null) return@rememberLauncherForActivityResult
         photoBusy = true; photoStatus = null
         scope.launch {
