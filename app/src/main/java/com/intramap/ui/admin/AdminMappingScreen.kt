@@ -41,16 +41,16 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     var recording by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var loadedFloor by remember { mutableStateOf<String?>(null) }
-    var status by remember { mutableStateOf("Open an editable building, choose a floor and walk to record routes.") }
+    var status by remember { mutableStateOf("Open a building, record a route, submit, import, then review and publish.") }
     var reviewing by remember { mutableStateOf(false) }
-
+    var refreshToken by remember { mutableIntStateOf(0) }
     fun perform(block: suspend () -> Unit) {
         if (busy) return
         busy = true
         scope.launch {
             try { block() }
             catch (e: CancellationException) { throw e }
-            catch (_: Exception) { status = "Operation failed. Check migrations 0003–0005, sign-in and permissions; refresh before retrying." }
+            catch (e: Exception) { status = studioFailure(e) }
             finally { busy = false }
         }
     }
@@ -60,88 +60,107 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     }
     suspend fun refreshFloor() {
         val w = requireNotNull(workspace); val v = requireNotNull(version); val b = requireNotNull(building)
-        nodes = w.nodes(v.id,floorKey.trim()); recordings = w.recordings(b.id,floorKey.trim()); floors = w.floors(v.id)
+        val freshNodes = w.nodes(v.id,floorKey.trim())
+        val freshRecordings = w.recordings(b.id,floorKey.trim())
+        val freshFloors = w.floors(v.id)
+        nodes = freshNodes; recordings = freshRecordings; floors = freshFloors
         loadedFloor = floorKey.trim(); start = null; facing = null; end = null
     }
     fun open(selected: MappingBuilding) = perform {
         clearSelection(); building = selected
         version = requireNotNull(workspace).draft(selected.id)
         floors = workspace.floors(requireNotNull(version).id)
-        status = "Draft opened. New drafts copy the current published map when available; existing drafts are resumed unchanged."
+        status = if (floors.isEmpty()) "Empty draft: record and submit a walk, then import it to create the first floor." else "Draft ready. Open review to inspect all floors before publishing."
     }
-    LaunchedEffect(workspace) {
+    LaunchedEffect(workspace,refreshToken) {
         if (workspace != null) {
-            try { buildings = workspace.editableBuildings() }
-            catch (e: CancellationException) { throw e }
-            catch (_: Exception) { status = "Could not load editable buildings. Check sign-in, connectivity and migration 0005." }
+            busy = true
+            try {
+                buildings = workspace.editableBuildings()
+                if (version != null) {
+                    floors = workspace.floors(requireNotNull(version).id)
+                    if (floorKey.isNotBlank()) refreshFloor()
+                }
+                status = "Workspace refresh succeeded. Recording submission and import are separate steps."
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { status = studioFailure(e) }
+            finally { busy = false }
         }
     }
     if (recording) {
-        PathRecordingScreen(buildingId = requireNotNull(building).id,floorKey = floorKey.trim(),startAnchorKey = null,
-            onBack = { recording = false; loadedFloor = null })
+        PathRecordingScreen(requireNotNull(building).id,floorKey.trim(),null,onBack = { recording = false; loadedFloor = null; refreshToken++ })
         return
     }
     if (reviewing && client != null && building != null && version != null) {
         DraftMapReviewScreen(client,requireNotNull(building),requireNotNull(version).id,
-            onBack = { reviewing = false; loadedFloor = null },
-            onPublished = { reviewing = false; clearSelection(); status = "Published reviewed map. Visitors can refresh the building list to download it." })
+            onBack = { reviewing = false; loadedFloor = null; refreshToken++ },
+            onPublished = { reviewing = false; clearSelection(); status = "Published reviewed map. Visitors can refresh to download it." })
         return
     }
-    Scaffold(topBar = {
-        TopAppBar(title = { Text("Walking map studio") },navigationIcon = { TextButton(enabled = !busy,onClick = onBack) { Text("Back") } })
-    }) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Walking map studio") },navigationIcon = { TextButton(enabled = !busy,onClick = onBack) { Text("Back") } }) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (workspace == null) { Text("Supabase is not configured."); return@Column }
+            if (workspace == null) { Text("Supabase is not configured. Check this build's Supabase URL and publishable key."); return@Column }
             Text(status)
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            OutlinedButton(enabled = !busy,onClick = { refreshToken++ }) { Text("Refresh workspace / retry connection") }
             Text("Editable buildings · owned or shared",style = MaterialTheme.typography.titleMedium)
             buildings.forEach { item -> OutlinedButton(enabled = !busy,onClick = { open(item) },modifier = Modifier.fillMaxWidth()) { Text(item.name) } }
-            OutlinedButton(enabled = !busy,onClick = { perform { buildings = workspace.editableBuildings() } }) { Text("Refresh buildings") }
             OutlinedTextField(name,{ name = it },label = { Text("New building name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
-            Text("Building ID is assigned automatically. Open existing buildings from the list above.",style = MaterialTheme.typography.bodySmall)
-            Button(enabled = !busy && name.isNotBlank(),onClick = {
-                perform {
-                    clearSelection()
-                    val current = workspace.editableBuildings()
-                    val created = current.firstOrNull { it.buildingKey == key } ?: requireNotNull(writer).createBuilding(key,name.trim(),"")
-                    building = created; buildings = workspace.editableBuildings(); version = workspace.draft(created.id)
-                    floors = workspace.floors(requireNotNull(version).id)
-                    key = UUID.randomUUID().toString(); name = ""
-                    status = "Building and draft ready. Its ID was assigned automatically."
-                }
-            }) { Text("Create building") }
+            Text("Building ID is assigned automatically.",style = MaterialTheme.typography.bodySmall)
+            Button(enabled = !busy && name.isNotBlank(),onClick = { perform {
+                clearSelection()
+                val current = workspace.editableBuildings()
+                val created = current.firstOrNull { it.buildingKey == key } ?: requireNotNull(writer).createBuilding(key,name.trim(),"")
+                building = created; buildings = workspace.editableBuildings(); version = workspace.draft(created.id)
+                floors = workspace.floors(requireNotNull(version).id)
+                key = UUID.randomUUID().toString(); name = ""
+                status = "Building ready. Record, submit and import a route to create a floor."
+            } }) { Text("Create building") }
             if (version != null) {
                 HorizontalDivider()
                 Text("${building?.name} · draft ${version?.versionNo}",style = MaterialTheme.typography.titleMedium)
-                OutlinedButton(enabled = !busy && floors.isNotEmpty(),onClick = { reviewing = true }) { Text("Open draft map for review / publication") }
+                if (floors.isEmpty()) Text("Publication blocked: no imported floors yet. Enter floor details, record a walk, submit it, then import the recording below. An empty map cannot be published.")
+                else Text("${floors.size} saved floors. Publication requires valid paths, an entrance, saved edits and review of every floor.")
+                OutlinedButton(enabled = !busy,onClick = { reviewing = true }) { Text("Open draft review / publication checklist") }
                 floors.forEach { floor -> TextButton(enabled = !busy,onClick = {
                     floorKey = floor.floorKey; floorName = floor.name; floorNumber = floor.floorNumber.toString(); loadedFloor = null
                 }) { Text(floor.name) } }
                 OutlinedTextField(floorKey,{ floorKey = it; loadedFloor = null },label = { Text("Floor ID") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(floorName,{ floorName = it },label = { Text("Floor name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(floorNumber,{ floorNumber = it },label = { Text("Floor number") },enabled = !busy,modifier = Modifier.fillMaxWidth())
-                Text("No X/Y or distance entry. Floor display bounds are derived from imported walking traces.")
-                OutlinedButton(enabled = !busy && floorKey.isNotBlank(),onClick = { perform { refreshFloor(); status = "Pending floor recordings loaded." } }) { Text("Load / refresh floor") }
+                Text("Floor geometry is created from imported walking traces, not by entering these labels.")
+                OutlinedButton(enabled = !busy && floorKey.isNotBlank(),onClick = { perform { refreshFloor(); status = "Floor refreshed from server." } }) { Text("Load / refresh floor") }
                 Button(enabled = !busy && floorKey.isNotBlank() && floorName.isNotBlank() && floorNumber.toIntOrNull() != null,onClick = { recording = true }) { Text("Walk and record a route") }
                 if (loadedFloor == floorKey.trim()) {
                     if (nodes.isNotEmpty()) {
-                        Text("Joining an existing floor requires the actual start and facing landmarks. During recording, align Forward while facing the chosen landmark. Proximity alone never joins paths.")
-                        WorkspaceNodePicker("Starting landmark",nodes,start) { start = it }
+                        Text("Select the physical start and facing landmarks before importing a joining route. Proximity alone never joins paths.")
+                        WorkspaceNodePicker("Starting landmark",nodes,start) { start = it; if (facing == it) facing = null }
                         WorkspaceNodePicker("Facing landmark",nodes.filter { it.nodeKey != start },facing) { facing = it }
-                        WorkspaceNodePicker("Optional end join (only if physically reached)",nodes,end) { end = it }
-                    } else Text("First route: its starting position and Forward direction define this floor's local frame.")
+                        WorkspaceNodePicker("Optional end join: only if physically reached",nodes,end) { end = it }
+                    } else Text("First route: its start and Forward direction define the floor's local frame.")
                     Text("Submitted recordings awaiting import",style = MaterialTheme.typography.titleMedium)
-                    recordings.forEach { item -> OutlinedButton(enabled = !busy && floorName.isNotBlank() && floorNumber.toIntOrNull() != null &&
-                        (nodes.isEmpty() || (start != null && facing != null && start != facing)),onClick = {
-                        perform {
-                            workspace.importRecording(item.id,requireNotNull(version).id,floorName.trim(),floorNumber.toInt(),start,facing,end)
-                            refreshFloor(); status = "Trace imported into draft. Open the draft map to review all floors before publishing."
-                        }
-                    },modifier = Modifier.fillMaxWidth()) { Text("Import recording ${item.id.take(8)}") } }
-                    if (recordings.isEmpty()) Text("No unimported submitted recordings on this floor. Record a walk, submit, then refresh.")
+                    recordings.forEach { item -> OutlinedButton(enabled = !busy && floorName.isNotBlank() && floorNumber.toIntOrNull() != null && (nodes.isEmpty() || (start != null && facing != null && start != facing)),onClick = { perform {
+                        workspace.importRecording(item.id,requireNotNull(version).id,floorName.trim(),floorNumber.toInt(),start,facing,end)
+                        refreshFloor(); status = "Trace imported. Open review and inspect every floor before publishing."
+                    } },modifier = Modifier.fillMaxWidth()) { Text("Import recording ${item.id.take(8)}") } }
+                    if (recordings.isEmpty()) Text("No submitted recordings waiting on this floor. Stop and submit your recording before returning here.")
                 }
             }
         }
+    }
+}
+
+private fun studioFailure(error: Exception): String {
+    val causes = generateSequence<Throwable>(error) { it.cause }.take(8).toList()
+    val detail = causes.joinToString(" ") { it.message.orEmpty() }.lowercase()
+    return when {
+        "42501" in detail || "row-level security" in detail || "permission denied" in detail || "403" in detail -> "Server denied this operation. This is a permission failure, not a connection failure. Verify this account can edit the selected building; refresh before retrying."
+        "401" in detail || "jwt expired" in detail || "refresh token" in detail -> "Session expired or rejected. Switch / sign out, sign in again, then refresh the workspace."
+        causes.any { it is java.net.UnknownHostException } -> "Cannot resolve the server address. Check Wi-Fi or mobile data and DNS, then tap Refresh workspace."
+        causes.any { it is java.net.SocketTimeoutException } || "timeout" in detail -> "Server request timed out. Check your connection and refresh. A previous write may have succeeded; verify before repeating it."
+        causes.any { it is javax.net.ssl.SSLException } -> "Secure connection failed. Check device date/time and network interception; TLS verification remains enabled."
+        causes.any { it is java.io.IOException } -> "Network request failed. Restore the connection, then refresh to reconcile server state before retrying a write."
+        else -> "Workspace operation failed (${error.javaClass.simpleName}). Refresh to reconcile server state; check backend schema and application logs if it persists."
     }
 }
 
