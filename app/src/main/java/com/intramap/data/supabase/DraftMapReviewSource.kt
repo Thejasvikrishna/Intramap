@@ -16,7 +16,7 @@ data class DraftReviewSnapshot(
         require(version.buildingId == owner.id && version.status == "draft")
         return Building(owner.id,owner.name,owner.description,
             floors.sortedBy { it.floorNumber }.map { Floor(it.floorKey,it.floorNumber,it.name,it.widthM,it.heightM) },
-            nodes.map { LocationNode(it.nodeKey,it.floorKey,it.name,it.nodeType,it.x,it.y,it.connectorGroupId,it.keywords,it.description) },
+            nodes.map { LocationNode(it.nodeKey,it.floorKey,it.name,it.nodeType,it.x,it.y,it.connectorGroupId,it.keywords,it.description,it.imageUrl) },
             edges.map { PathEdge(it.edgeKey,it.fromKey,it.toKey,it.distanceM,it.accessibilityType,it.isAvailable) })
     }
 }

@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -27,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import coil.compose.AsyncImage
 import com.intramap.data.model.Building
 import com.intramap.data.model.LocationNode
 import com.intramap.navigation.NavigationSession
@@ -252,6 +254,10 @@ fun MapScreen(
                     if (preview != null) TextButton(onClick = { previewId = null }) { Text("Close", color = MapsBlue) }
                 }
                 if (preview != null) {
+                    preview.imageUrl?.let { url ->
+                        AsyncImage(model = url, contentDescription = "Reference photo for ${preview.name}",
+                            contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().height(170.dp))
+                    }
                     Text("Mapped ${preview.type.lowercase().replace('_', ' ')}", style = MaterialTheme.typography.bodySmall)
                     Button(enabled = transfer == null && session.errors.isEmpty(), colors = ButtonDefaults.buttonColors(containerColor = MapsBlue),
                         shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth(), onClick = {

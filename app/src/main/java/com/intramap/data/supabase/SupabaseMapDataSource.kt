@@ -39,7 +39,8 @@ import kotlinx.serialization.Serializable
     val y: Float,
     @SerialName("connector_group_id") val connectorGroupId: String? = null,
     val keywords: List<String> = emptyList(),
-    val description: String? = null
+    val description: String? = null,
+    @SerialName("image_url") val imageUrl: String? = null
 )
 
 @Serializable private data class EdgeRow(
@@ -86,7 +87,7 @@ class SupabaseMapDataSource(private val client: SupabaseClient) {
                         LocationNode(
                             nodeId = it.nodeKey, floorId = it.floorKey, name = it.name, type = it.nodeType,
                             x = it.x, y = it.y, connectorGroupId = it.connectorGroupId,
-                            keywords = it.keywords, landmarkDescription = it.description
+                            keywords = it.keywords, landmarkDescription = it.description, imageUrl = it.imageUrl
                         )
                     },
                     edges = edges.map {

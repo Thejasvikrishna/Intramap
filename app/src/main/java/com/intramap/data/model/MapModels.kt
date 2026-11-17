@@ -13,7 +13,8 @@ import kotlinx.serialization.Serializable
     val x: Float, val y: Float,
     val connectorGroupId: String? = null,
     val keywords: List<String> = emptyList(),
-    val landmarkDescription: String? = null
+    val landmarkDescription: String? = null,
+    val imageUrl: String? = null
 )
 
 @Serializable data class PathEdge(

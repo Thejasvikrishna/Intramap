@@ -23,7 +23,6 @@ class WalkingMapWorkspace(private val client: SupabaseClient) {
         filter { eq("version_id",versionId) }
     }.decodeList<MappingFloor>()
 
-    // The review RPC returns the graph as one snapshot, including all node entries.
     suspend fun nodes(versionId: String,floor: String): List<MappingNode> =
         DraftMapReviewSource(client).load(versionId).nodes.filter { it.floorKey == floor }
 
@@ -37,5 +36,11 @@ class WalkingMapWorkspace(private val client: SupabaseClient) {
             put("floor_name",floorName); put("floor_number",floorNumber)
             put("start_node",start); put("facing_node",facing); put("end_node",end)
         })
+    }
+
+    suspend fun updateNodeImage(nodeId: String,imageUrl: String?) {
+        client.from("map_nodes").update({ set("image_url",imageUrl) }) {
+            filter { eq("id",nodeId) }
+        }
     }
 }

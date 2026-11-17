@@ -1,6 +1,10 @@
 package com.intramap.ui.admin
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -9,13 +13,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.intramap.data.model.MappingBuilding
 import com.intramap.data.supabase.DraftFloorLinkSource
 import com.intramap.data.supabase.DraftMapEditSource
 import com.intramap.data.supabase.DraftMapReviewSource
 import com.intramap.data.supabase.DraftReviewSnapshot
+import com.intramap.data.supabase.WalkingMapWorkspace
 import com.intramap.domain.mapping.DraftMapEdits
 import com.intramap.navigation.validateNavigationMap
 import com.intramap.ui.map.InteractiveIndoorMap
@@ -31,6 +39,8 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
     val api = remember(client) { DraftMapReviewSource(client) }
     val writer = remember(client) { DraftMapEditSource(client) }
     val linkWriter = remember(client) { DraftFloorLinkSource(client) }
+    val workspace = remember(client) { WalkingMapWorkspace(client) }
+    val uploader = remember { CloudinaryImageUploader(LocalContext.current) }
     val scope = rememberCoroutineScope()
     var snapshot by remember(versionId) { mutableStateOf<DraftReviewSnapshot?>(null) }
     var edits by remember(versionId) { mutableStateOf<DraftMapEdits?>(null) }
@@ -47,6 +57,8 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
     var enrollmentOpen by remember(versionId) { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
+    var photoBusy by remember { mutableStateOf(false) }
+    var photoStatus by remember { mutableStateOf<String?>(null) }
     var requiresReload by remember { mutableStateOf(false) }
     var confirmPublish by remember { mutableStateOf(false) }
     var discardAction by remember { mutableStateOf<String?>(null) }
@@ -58,6 +70,21 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
     val errors = remember(building) { building?.let { validateNavigationMap(it) }.orEmpty() }
     val complete = building != null && building.floors.isNotEmpty() && building.edges.isNotEmpty() && errors.isEmpty() &&
         !dirty && !requiresReload && reviewed.containsAll(building.floors.map { it.floorId })
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val node = selected ?: return@rememberLauncherForActivityResult
+        if (uri == null) return@rememberLauncherForActivityResult
+        photoBusy = true; photoStatus = null
+        scope.launch {
+            try {
+                val url = uploader.uploadPlacePhoto(uri)
+                workspace.updateNodeImage(node.id,url)
+                reload++
+                photoStatus = "Reference photo uploaded and saved."
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { photoStatus = "Photo upload or save failed. Check connection and Cloudinary preset." }
+            finally { photoBusy = false }
+        }
+    }
     LaunchedEffect(versionId,owner.id,reload) {
         busy = true; snapshot = null; edits = null; reviewed = emptySet(); selectedId = null; moving = false; joinOrigin = null
         try {
@@ -176,6 +203,18 @@ fun DraftMapReviewScreen(client: SupabaseClient, owner: MappingBuilding, version
                             TextButton(enabled = !busy && !requiresReload,onClick = { joinOrigin = node.nodeId; joinVerified = false; moving = false }) { Text("Join from here") }
                             TextButton(enabled = !busy && !requiresReload,onClick = { enrollmentOpen = true }) { Text("Register reference image") }
                         }
+                        HorizontalDivider()
+                        Text("Visitor reference photo",style = MaterialTheme.typography.titleSmall)
+                        node.imageUrl?.let {
+                            AsyncImage(model = it,contentDescription = "Reference photo for ${node.name}",
+                                contentScale = ContentScale.Crop,modifier = Modifier.fillMaxWidth().height(150.dp))
+                        }
+                        Button(enabled = !photoBusy && !busy && !requiresReload,onClick = {
+                            photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }) { Text(if (photoBusy) "Uploading photo…" else if (node.imageUrl == null) "Add place photo" else "Replace place photo") }
+                        if (photoBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        photoStatus?.let { Text(it,style = MaterialTheme.typography.bodySmall) }
+                        Text("Shown to visitors in the place preview. Use a clear entrance, door, or signboard photo.",style = MaterialTheme.typography.bodySmall)
                         if (moving) Text("Tap the corrected position on the map. Maximum 3 m; visual-reference floors may require re-registration.")
                         graph.edges.filter { it.sourceNodeId == node.nodeId || it.destinationNodeId == node.nodeId }.forEach { edge ->
                             val otherId = if (edge.sourceNodeId == node.nodeId) edge.destinationNodeId else edge.sourceNodeId

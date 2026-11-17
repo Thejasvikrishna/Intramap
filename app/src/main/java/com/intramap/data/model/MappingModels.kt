@@ -42,7 +42,8 @@ data class MappingNode(
     val y: Float,
     @SerialName("connector_group_id") val connectorGroupId: String? = null,
     val keywords: List<String> = emptyList(),
-    val description: String? = null
+    val description: String? = null,
+    @SerialName("image_url") val imageUrl: String? = null
 )
 
 @Serializable
