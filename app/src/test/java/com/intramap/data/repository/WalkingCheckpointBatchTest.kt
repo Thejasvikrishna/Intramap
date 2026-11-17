@@ -21,7 +21,7 @@ class WalkingCheckpointBatchTest {
         val reopened = WalkingDraftStore(directory,"account","building","floor")
         assertEquals(20L,reopened.load().await()!!.revision)
         assertEquals(1,directory.listFiles()!!.count { it.extension == "json" })
-        directory.deleteRecursively()
+        assertTrue(directory.deleteRecursively())
     }
     @Test fun queuedDeleteIsABarrierBeforeAnotherRecording() = runBlocking {
         val directory = Files.createTempDirectory("walking-barrier").toFile()
@@ -32,7 +32,7 @@ class WalkingCheckpointBatchTest {
         val second = store.save(draft(secondId,1L))
         first.await(); removal.await(); second.await()
         assertEquals(secondId,store.load().await()!!.recordingId)
-        directory.deleteRecursively()
+        assertTrue(directory.deleteRecursively())
     }
     @Test fun frozenGeometryCannotChangeWithinOneBatch() = runBlocking {
         val directory = Files.createTempDirectory("walking-frozen").toFile()
@@ -44,6 +44,6 @@ class WalkingCheckpointBatchTest {
         first.await()
         try { changed.await(); fail("Frozen geometry was accepted") } catch (_: IllegalStateException) { }
         assertEquals(frozen.samples,store.load().await()!!.samples)
-        directory.deleteRecursively()
+        assertTrue(directory.deleteRecursively())
     }
 }
