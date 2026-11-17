@@ -22,7 +22,7 @@ data class SavedWalkingDraft(
     val uploadAttempted: Boolean = false, val submitted: Boolean = false, val formatVersion: Int = 1
 )
 
-/** Numeric geometry only. Save receipts complete only after atomic, durable replacement. */
+/** Numeric geometry only. One unfinished route and retained submitted routes per scoped floor. */
 class WalkingDraftStore internal constructor(
     private val directory: File, private val account: String, private val buildingId: String, private val floorKey: String
 ) {
@@ -30,11 +30,13 @@ class WalkingDraftStore internal constructor(
     private class Save(val draft: SavedWalkingDraft,val result: CompletableDeferred<Unit>) : Operation
     private class Load(val result: CompletableDeferred<SavedWalkingDraft?>) : Operation
     private class Delete(val result: CompletableDeferred<Unit>) : Operation
+    private class History(val result: CompletableDeferred<List<String>>) : Operation
     private val json = Json { ignoreUnknownKeys = true }
     private val digest = MessageDigest.getInstance("SHA-256").digest("$account|$buildingId|$floorKey".toByteArray())
         .joinToString("") { "%02x".format(it.toInt() and 255) }
     private val target = File(directory,"$digest.json")
     private val pending = File(directory,"$digest.pending")
+    private val historyDirectory = File(File(directory,"submitted"),digest)
     private val queue = Channel<Operation>(64)
     private var initialized = false
     private var cached: SavedWalkingDraft? = null
@@ -54,7 +56,16 @@ class WalkingDraftStore internal constructor(
                         }
                         saveBatch(batch)
                     }
-                    is Load -> try { operation.result.complete(read()) } catch (e: Exception) { operation.result.completeExceptionally(e) }
+                    is Load -> try {
+                        archiveSubmitted()
+                        operation.result.complete(read())
+                    } catch (e: Exception) { operation.result.completeExceptionally(e) }
+                    is History -> try {
+                        archiveSubmitted()
+                        val entries = if (historyDirectory.exists()) requireNotNull(historyDirectory.listFiles()) else emptyArray<File>()
+                        operation.result.complete(entries.filter { it.isFile && it.extension == "json" }
+                            .map { UUID.fromString(it.nameWithoutExtension).toString() }.sorted())
+                    } catch (e: Exception) { operation.result.completeExceptionally(e) }
                     is Delete -> try {
                         Files.deleteIfExists(target.toPath()); Files.deleteIfExists(pending.toPath())
                         cached = null; initialized = true; operation.result.complete(Unit)
@@ -63,6 +74,7 @@ class WalkingDraftStore internal constructor(
             }
         }
     }
+    private fun historyFile(id: String) = File(historyDirectory,"${UUID.fromString(id)}.json")
     private fun validate(draft: SavedWalkingDraft) {
         require(draft.formatVersion == 1 && draft.revision >= 0)
         require(draft.account == account && draft.buildingId == buildingId && draft.floorKey == floorKey)
@@ -80,6 +92,22 @@ class WalkingDraftStore internal constructor(
         }
         return cached
     }
+    private fun archiveSubmitted() {
+        val completed = read() ?: return
+        if (!completed.submitted) return
+        validate(completed)
+        check(historyDirectory.isDirectory || historyDirectory.mkdirs()) { "Cannot create submitted route history" }
+        val destination = historyFile(completed.recordingId)
+        if (destination.exists()) {
+            require(destination.length() <= 8L * 1024 * 1024)
+            val existing = json.decodeFromString<SavedWalkingDraft>(destination.readText()).also { validate(it) }
+            check(existing == completed) { "Conflicting submitted route receipt; original retained" }
+            Files.delete(target.toPath())
+        } else {
+            Files.move(target.toPath(),destination.toPath(),StandardCopyOption.ATOMIC_MOVE)
+        }
+        cached = null; initialized = true
+    }
     private fun saveBatch(batch: List<Save>) {
         val accepted = mutableListOf<Save>()
         try {
@@ -89,8 +117,9 @@ class WalkingDraftStore internal constructor(
                 try {
                     val draft = save.draft
                     validate(draft)
+                    check(!historyFile(draft.recordingId).exists()) { "This submitted route is archived; create a new recording" }
                     val previous = latest
-                    check(previous == null || previous.recordingId == draft.recordingId) { "Another local recording already exists" }
+                    check(previous == null || previous.recordingId == draft.recordingId) { "Another unfinished local recording already exists" }
                     if (previous == null || draft.revision >= previous.revision) {
                         check(previous?.uploadAttempted != true || (draft.uploadAttempted && draft.samples == previous.samples)) { "Uploaded geometry is frozen" }
                         check(previous?.submitted != true || draft.submitted)
@@ -113,9 +142,15 @@ class WalkingDraftStore internal constructor(
             batch.forEach { if (!it.result.isCompleted) it.result.completeExceptionally(e) }
         }
     }
+    /** Resumes unfinished work; a durable submission is archived before a new route is offered. */
     fun load(): Deferred<SavedWalkingDraft?> {
         val result = CompletableDeferred<SavedWalkingDraft?>()
         if (queue.trySend(Load(result)).isFailure) result.completeExceptionally(IllegalStateException("Local recording writer is busy"))
+        return result
+    }
+    fun submittedRecordingIds(): Deferred<List<String>> {
+        val result = CompletableDeferred<List<String>>()
+        if (queue.trySend(History(result)).isFailure) result.completeExceptionally(IllegalStateException("Local recording writer is busy"))
         return result
     }
     fun save(draft: SavedWalkingDraft): Deferred<Unit> {
@@ -123,6 +158,7 @@ class WalkingDraftStore internal constructor(
         if (queue.trySend(Save(draft.copy(samples = draft.samples.toList()),result)).isFailure) result.completeExceptionally(IllegalStateException("Local recording writer is busy"))
         return result
     }
+    /** Removes only unfinished/active state, never previously archived submissions or server data. */
     fun deleteLocalCopy(): Deferred<Unit> {
         val result = CompletableDeferred<Unit>()
         if (queue.trySend(Delete(result)).isFailure) result.completeExceptionally(IllegalStateException("Local recording writer is busy"))
