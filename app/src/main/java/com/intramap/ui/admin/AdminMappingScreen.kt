@@ -6,6 +6,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.intramap.data.model.*
@@ -14,6 +15,7 @@ import com.intramap.data.supabase.SupabaseMappingDataSource
 import com.intramap.data.supabase.WalkingMapWorkspace
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -28,8 +30,8 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     var floors by remember { mutableStateOf(emptyList<MappingFloor>()) }
     var nodes by remember { mutableStateOf(emptyList<MappingNode>()) }
     var recordings by remember { mutableStateOf(emptyList<PathRecording>()) }
-    var key by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
+    var key by rememberSaveable { mutableStateOf(UUID.randomUUID().toString()) }
+    var name by rememberSaveable { mutableStateOf("") }
     var floorKey by remember { mutableStateOf("") }
     var floorName by remember { mutableStateOf("") }
     var floorNumber by remember { mutableStateOf("0") }
@@ -95,18 +97,19 @@ fun AdminMappingScreen(onBack: () -> Unit) {
             Text("Editable buildings · owned or shared",style = MaterialTheme.typography.titleMedium)
             buildings.forEach { item -> OutlinedButton(enabled = !busy,onClick = { open(item) },modifier = Modifier.fillMaxWidth()) { Text(item.name) } }
             OutlinedButton(enabled = !busy,onClick = { perform { buildings = workspace.editableBuildings() } }) { Text("Refresh buildings") }
-            OutlinedTextField(key,{ key = it },label = { Text("New building ID") },enabled = !busy,modifier = Modifier.fillMaxWidth())
             OutlinedTextField(name,{ name = it },label = { Text("New building name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
-            Button(enabled = !busy && key.isNotBlank() && name.isNotBlank(),onClick = {
+            Text("Building ID is assigned automatically. Open existing buildings from the list above.",style = MaterialTheme.typography.bodySmall)
+            Button(enabled = !busy && name.isNotBlank(),onClick = {
                 perform {
                     clearSelection()
                     val current = workspace.editableBuildings()
-                    val created = current.firstOrNull { it.buildingKey == key.trim() } ?: requireNotNull(writer).createBuilding(key.trim(),name.trim(),"")
+                    val created = current.firstOrNull { it.buildingKey == key } ?: requireNotNull(writer).createBuilding(key,name.trim(),"")
                     building = created; buildings = workspace.editableBuildings(); version = workspace.draft(created.id)
                     floors = workspace.floors(requireNotNull(version).id)
-                    status = "Building and draft ready. Existing drafts are preserved; new drafts copy the published map when available."
+                    key = UUID.randomUUID().toString(); name = ""
+                    status = "Building and draft ready. Its ID was assigned automatically."
                 }
-            }) { Text("Create or resume building") }
+            }) { Text("Create building") }
             if (version != null) {
                 HorizontalDivider()
                 Text("${building?.name} · draft ${version?.versionNo}",style = MaterialTheme.typography.titleMedium)
