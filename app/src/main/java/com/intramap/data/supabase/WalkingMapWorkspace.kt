@@ -1,6 +1,7 @@
 package com.intramap.data.supabase
 
 import com.intramap.data.model.*
+import com.intramap.domain.mapping.validateRecordingImport
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.postgrest
@@ -22,7 +23,12 @@ class WalkingMapWorkspace(private val client: SupabaseClient) {
         "pending_walking_recordings",buildJsonObject { put("b",buildingId); put("f",floor) }
     ).decodeList<PathRecording>()
     suspend fun importRecording(recordingId: String,versionId: String,floorName: String,floorNumber: Int,start: String?,facing: String?,end: String?) {
+        require(floorName.isNotBlank()) { "Floor name is required" }
         PlaceWorkflowSource(client).requireInstalled()
+        val recording = client.from("path_recordings").select { filter { eq("id",recordingId) } }.decodeSingle<PathRecording>()
+        require(recording.id == recordingId) { "Recording identity changed" }
+        val snapshot = DraftMapReviewSource(client).load(versionId)
+        validateRecordingImport(recording,snapshot.version,snapshot.nodes.filter { it.floorKey == recording.floorKey },start,facing,end)
         DraftPlaceSource(client).importRecording(recordingId,versionId,floorName,floorNumber,start,facing,end)
     }
     suspend fun updateNodeImage(nodeId: String,imageUrl: String?) {
