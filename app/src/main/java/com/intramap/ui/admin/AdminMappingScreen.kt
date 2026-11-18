@@ -39,6 +39,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     var facing by remember { mutableStateOf<String?>(null) }
     var end by remember { mutableStateOf<String?>(null) }
     var recording by remember { mutableStateOf(false) }
+    var recordingAnchor by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var loadedFloor by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Open a building, record a route, submit, import, then review and publish.") }
@@ -57,7 +58,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     }
     fun clearSelection() {
         version = null; floors = emptyList(); nodes = emptyList(); recordings = emptyList(); loadedFloor = null
-        start = null; facing = null; end = null; floorKey = ""; floorName = ""; floorNumber = "0"
+        start = null; facing = null; end = null; recordingAnchor = null; floorKey = ""; floorName = ""; floorNumber = "0"
     }
     suspend fun refreshFloor() {
         val w = requireNotNull(workspace); val v = requireNotNull(version); val b = requireNotNull(building)
@@ -65,7 +66,9 @@ fun AdminMappingScreen(onBack: () -> Unit) {
         val freshRecordings = w.recordings(b.id,floorKey.trim())
         val freshFloors = w.floors(v.id)
         nodes = freshNodes; recordings = freshRecordings; floors = freshFloors
-        loadedFloor = floorKey.trim(); start = null; facing = null; end = null
+        val validKeys = freshNodes.map { it.nodeKey }.toSet()
+        start = start?.takeIf { it in validKeys }; facing = facing?.takeIf { it in validKeys && it != start }
+        end = end?.takeIf { it in validKeys }; loadedFloor = floorKey.trim()
     }
     fun open(selected: MappingBuilding) = perform {
         clearSelection(); building = selected
@@ -89,7 +92,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
         }
     }
     if (recording) {
-        PathRecordingScreen(requireNotNull(building).id,floorKey.trim(),null,onBack = { recording = false; loadedFloor = null; refreshToken++ })
+        PathRecordingScreen(requireNotNull(building).id,floorKey.trim(),recordingAnchor,onBack = { recording = false; loadedFloor = null; refreshToken++ })
         return
     }
     if (managingPlaces && client != null && building != null && version != null) {
@@ -128,19 +131,26 @@ fun AdminMappingScreen(onBack: () -> Unit) {
                 else Text("${floors.size} saved floors. Manage destinations, then review saved geometry and every floor before publication.")
                 OutlinedButton(enabled = !busy && floors.isNotEmpty(),onClick = { managingPlaces = true }) { Text("Manage rooms and shops") }
                 OutlinedButton(enabled = !busy,onClick = { reviewing = true }) { Text("Open draft review / publication checklist") }
-                floors.forEach { floor -> TextButton(enabled = !busy,onClick = { floorKey = floor.floorKey; floorName = floor.name; floorNumber = floor.floorNumber.toString(); loadedFloor = null }) { Text(floor.name) } }
-                OutlinedTextField(floorKey,{ floorKey = it; loadedFloor = null },label = { Text("Floor ID") },enabled = !busy,modifier = Modifier.fillMaxWidth())
+                floors.forEach { floor -> TextButton(enabled = !busy,onClick = { floorKey = floor.floorKey; floorName = floor.name; floorNumber = floor.floorNumber.toString(); loadedFloor = null; start = null; facing = null; end = null }) { Text(floor.name) } }
+                OutlinedTextField(floorKey,{ floorKey = it; loadedFloor = null; start = null; facing = null; end = null },label = { Text("Floor ID") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(floorName,{ floorName = it },label = { Text("Floor name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(floorNumber,{ floorNumber = it },label = { Text("Floor number") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 Text("Floor geometry is created from imported walking traces, not by entering these labels.")
                 OutlinedButton(enabled = !busy && floorKey.isNotBlank(),onClick = { perform { refreshFloor(); status = "Floor refreshed from server." } }) { Text("Load / refresh floor") }
-                Button(enabled = !busy && floorKey.isNotBlank() && floorName.isNotBlank() && floorNumber.toIntOrNull() != null,onClick = { recording = true }) { Text("Walk and record a route") }
+                Button(enabled = !busy && floorKey.isNotBlank() && floorName.isNotBlank() && floorNumber.toIntOrNull() != null,onClick = { recordingAnchor = null; recording = true }) { Text("Walk and record a route") }
                 if (loadedFloor == floorKey.trim()) {
                     if (nodes.isNotEmpty()) {
                         Text("Select the physical start and facing landmarks before importing a joining route. Proximity alone never joins paths.")
                         WorkspaceNodePicker("Starting landmark",nodes,start) { start = it; if (facing == it) facing = null }
                         WorkspaceNodePicker("Facing landmark",nodes.filter { it.nodeKey != start },facing) { facing = it }
                         WorkspaceNodePicker("Optional end join: only if physically reached",nodes,end) { end = it }
+                        val selectedOwner = building
+                        val selectedVersion = version
+                        if (client != null && selectedOwner != null && selectedVersion != null) key(selectedVersion.id,floorKey.trim()) {
+                            DraftBranchRecordingLauncher(client,selectedOwner,selectedVersion.id,floorKey.trim(),enabled = !busy && floorName.isNotBlank() && floorNumber.toIntOrNull() != null,onReady = { anchor,direction ->
+                                start = anchor; facing = direction; end = null; recordingAnchor = anchor; recording = true
+                            })
+                        }
                     } else Text("First route: its start and Forward direction define the floor's local frame.")
                     Text("Submitted recordings awaiting import",style = MaterialTheme.typography.titleMedium)
                     Text("Import requires the place-aware backend migrations 0011–0014. No legacy import fallback will discard destinations.",style = MaterialTheme.typography.bodySmall)
