@@ -22,16 +22,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.intramap.BuildConfig
-import com.intramap.data.model.PathRecordingPoint
 import com.intramap.data.repository.SavedWalkingDraft
 import com.intramap.data.repository.WalkingDraftStore
+import com.intramap.data.supabase.RecordingPlaceSubmissionSource
 import com.intramap.data.supabase.SupabaseClientFactory
 import com.intramap.data.supabase.SupabaseMappingDataSource
 import com.intramap.domain.mapping.*
 import com.intramap.ui.navigation.NavigationMotionControls
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
-import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.launch
@@ -59,6 +58,7 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
     val owner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val source = remember(client) { SupabaseMappingDataSource(client) }
+    val submitter = remember(client) { RecordingPlaceSubmissionSource(client) }
     val store = remember(account,buildingId,floorKey) { WalkingDraftStore.open(File(context.noBackupFilesDir,"walking_drafts"),account,buildingId,floorKey) }
     var trace by remember { mutableStateOf<WalkingTrace?>(null) }
     var points by remember { mutableStateOf(emptyList<WalkingSample>()) }
@@ -86,11 +86,12 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
     var markerName by remember { mutableStateOf("") }
     var markerType by remember { mutableStateOf("ROOM") }
     var status by remember { mutableStateOf("Checking saved recording…") }
+    fun currentSnapshot() = SavedWalkingDraft(account,buildingId,floorKey,requireNotNull(recordingId),points.toList(),revision,uploadAttempted,submitted,
+        formatVersion = checkpointFormat,places = places?.places.orEmpty().toList())
     fun persist(): Deferred<Unit>? {
-        val id = recordingId ?: return null
+        if (recordingId == null) return null
         revision++
-        val snapshot = SavedWalkingDraft(account,buildingId,floorKey,id,points.toList(),revision,uploadAttempted,submitted,
-            formatVersion = checkpointFormat,places = places?.places.orEmpty().toList())
+        val snapshot = currentSnapshot()
         val ticket = store.save(snapshot)
         scope.launch {
             try {
@@ -214,59 +215,60 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
                     if (!reviewing && !uploadAttempted) {
                         val recordMotion: (Double,Double) -> Unit = { length,heading ->
                             if (!busy && !reviewing && !saveError && !leave && !discard && !resume && trace?.step(length,heading,maxOf(SystemClock.elapsedRealtime(),points.last().timeMs+1)) == true) {
-                                points = trace!!.snapshot()
-                                places = RoutePlaceEdits.restore(points,places?.places.orEmpty())
-                                persist()
+                                points = trace!!.snapshot(); places = RoutePlaceEdits.restore(points,places?.places.orEmpty()); persist()
                                 if (points.size >= 10000) { reviewing = true; selectedSample = points.lastIndex; status = "Sample limit reached. Review this segment." }
                             }
                         }
                         val active = loaded && !busy && !leave && !discard && !resume && !saveError
-                        if (cameraMode) key(cameraEpoch) {
-                            CameraMappingControls(active,recordMotion,onInterrupted = { interrupt(it) },onRunningChanged = { running = it })
-                        } else NavigationMotionControls(enabled = active,onStep = recordMotion,onRunningChanged = { running = it })
-                        OutlinedTextField(markerName,{ markerName = it.take(120) },label = { Text("Legacy route landmark name") },enabled = !busy && !saveError,modifier = Modifier.fillMaxWidth())
+                        if (cameraMode) key(cameraEpoch) { CameraMappingControls(active,recordMotion,onInterrupted = { interrupt(it) },onRunningChanged = { running = it }) }
+                        else NavigationMotionControls(enabled = active,onStep = recordMotion,onRunningChanged = { running = it })
+                        OutlinedTextField(markerName,{ markerName = it.take(120) },label = { Text("Route landmark name") },enabled = !busy && !saveError,modifier = Modifier.fillMaxWidth())
                         Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf("ROOM","ENTRANCE","JUNCTION","TURN","STAIRS","ELEVATOR").forEach { type -> FilterChip(selected = markerType == type,onClick = { markerType = type },label = { Text(type) }) }
                         }
                         OutlinedButton(enabled = !busy && !saveError && markerName.isNotBlank() && (!cameraMode || running),onClick = {
-                            if (trace?.mark(markerType,markerName) == true) {
-                                points = trace!!.snapshot(); places = RoutePlaceEdits.restore(points,places?.places.orEmpty()); markerName = ""; persist()
-                            }
-                        }) { Text("Mark legacy landmark") }
-                        Text("Stop to review and add independent rooms or shops at any recorded point.",style = MaterialTheme.typography.bodySmall)
+                            if (trace?.mark(markerType,markerName) == true) { points = trace!!.snapshot(); places = RoutePlaceEdits.restore(points,places?.places.orEmpty()); markerName = ""; persist() }
+                        }) { Text("Mark route landmark") }
+                        Text("Stop to review and add independent rooms or shops at recorded points.",style = MaterialTheme.typography.bodySmall)
                         Button(enabled = !busy && points.size > 1,onClick = { reviewing = true; selectedSample = points.lastIndex; persist() },modifier = Modifier.fillMaxWidth()) { Text("Stop and review places") }
                     } else {
                         Text("Review the route and its places. Import and map review remain required before publication.",style = MaterialTheme.typography.bodyMedium)
                         val currentPlaces = places
                         if (currentPlaces != null) {
                             Text("Selected route point ${(selectedSample.coerceIn(0,points.lastIndex) + 1)} / ${points.size}",style = MaterialTheme.typography.labelLarge)
-                            if (points.size > 1) Slider(value = selectedSample.coerceIn(0,points.lastIndex).toFloat(),onValueChange = { selectedSample = it.roundToInt().coerceIn(0,points.lastIndex) },
-                                valueRange = 0f..points.lastIndex.toFloat(),enabled = !busy && !uploadAttempted && !saveError)
+                            if (points.size > 1) Slider(value = selectedSample.coerceIn(0,points.lastIndex).toFloat(),onValueChange = { selectedSample = it.roundToInt().coerceIn(0,points.lastIndex) },valueRange = 0f..points.lastIndex.toFloat(),enabled = !busy && !uploadAttempted && !saveError)
                             RoutePlaceEditor(currentPlaces,selectedSample.coerceIn(0,points.lastIndex),enabled = !busy && !saveError && !uploadAttempted,onChange = { updated ->
-                                if (!busy && !saveError && !uploadAttempted) { places = updated; checkpointFormat = 2; persist(); status = "Place edits checkpointed locally. Upload integration is still pending." }
+                                if (!busy && !saveError && !uploadAttempted) { places = updated; checkpointFormat = 2; persist(); status = "Place changes queued for local checkpointing." }
                             })
                         }
                         if (!uploadAttempted && cameraMode && points.size == 1 && !saveError) OutlinedButton(enabled = !busy,onClick = { reviewing = false; cameraEpoch++ }) { Text("Retry camera setup") }
                         if (cameraMode && points.size > 1) Text("A new camera frame will not be joined automatically.",style = MaterialTheme.typography.bodySmall)
                         if (!uploadAttempted && !cameraMode) OutlinedButton(enabled = !busy && !saveError,onClick = { resume = true }) { Text("Resume sensors at endpoint") }
-                        val hasIndependentPlaces = places?.places?.isNotEmpty() == true
-                        if (hasIndependentPlaces) Text("Submission paused: independent place upload/import is not integrated yet. Save and leave to retain all place edits. The app will not silently drop them.",color = MaterialTheme.colorScheme.error,style = MaterialTheme.typography.bodySmall)
+                        Text("Submission includes all independent places and requires backend migrations 0011–0014. Support is checked before a new upload is frozen.",style = MaterialTheme.typography.bodySmall)
                         if (points.size <= 1) Text("Walk a route before submitting; a starting point is not a path.",style = MaterialTheme.typography.bodySmall)
-                        Button(enabled = !busy && !saveError && points.size > 1 && !hasIndependentPlaces,onClick = {
-                            busy = true; uploadAttempted = true; places = places?.freeze()
-                            val id = requireNotNull(recordingId); val snapshot = points.toList()
+                        Button(enabled = !busy && !saveError && points.size > 1,onClick = {
+                            busy = true
                             scope.launch {
                                 try {
-                                    persist()?.await()
-                                    snapshot.mapIndexed { index,p -> PathRecordingPoint(id,index,p.x.toFloat(),p.y.toFloat(),p.timeMs,p.headingDeg.toFloat(),p.marker) }
-                                        .chunked(100).forEach { batch -> client.from("path_recording_points").upsert(batch) { onConflict = "recording_id,seq" } }
-                                    source.submitRecording(id); submitted = true; persist()?.await()
-                                    status = "Submitted. Return to the studio to import and review the route."
+                                    submitter.requireBackend()
+                                    uploadAttempted = true; places = places?.freeze()
+                                    val receipt = requireNotNull(persist())
+                                    val frozen = currentSnapshot()
+                                    receipt.await()
+                                    status = "Uploading frozen route and places…"
+                                    submitter.uploadFrozenRecording(frozen)
+                                    submitted = true; persist()?.await()
+                                    status = "Route and places submitted. Return to the studio to import and review them."
                                 } catch (e: CancellationException) { throw e }
-                                catch (_: Exception) { status = if (submitted) "Server submission succeeded. Retry local save for the receipt." else "Upload incomplete. Geometry is frozen; retry sends the same keys." }
-                                finally { busy = false }
+                                catch (_: Exception) {
+                                    status = when {
+                                        submitted -> "Server submission succeeded. Retry local save for its receipt."
+                                        !uploadAttempted -> "Upload not started. Check connection, sign-in and backend migrations 0011–0014. Place edits remain editable."
+                                        else -> "Submission incomplete or unconfirmed. Route and places remain frozen locally; retry reconciles server state without dropping markers."
+                                    }
+                                } finally { busy = false }
                             }
-                        },modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Saving / uploading…" else if (uploadAttempted) "Retry submission" else "Submit recording") }
+                        },modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Checking / submitting…" else if (uploadAttempted) "Retry route and place submission" else "Submit route and places") }
                     }
                 }
                 if (submitted) Button(onClick = { back() },modifier = Modifier.fillMaxWidth()) { Text("Return to studio") }
