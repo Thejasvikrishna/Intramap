@@ -43,6 +43,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     var loadedFloor by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Open a building, record a route, submit, import, then review and publish.") }
     var reviewing by remember { mutableStateOf(false) }
+    var managingPlaces by remember { mutableStateOf(false) }
     var refreshToken by remember { mutableIntStateOf(0) }
     fun perform(block: suspend () -> Unit) {
         if (busy) return
@@ -70,7 +71,7 @@ fun AdminMappingScreen(onBack: () -> Unit) {
         clearSelection(); building = selected
         version = requireNotNull(workspace).draft(selected.id)
         floors = workspace.floors(requireNotNull(version).id)
-        status = if (floors.isEmpty()) "Empty draft: record and submit a walk, then import it to create the first floor." else "Draft ready. Open review to inspect all floors before publishing."
+        status = if (floors.isEmpty()) "Empty draft: record and submit a walk, then import it to create the first floor." else "Draft ready. Manage rooms and shops, then review every floor before publishing."
     }
     LaunchedEffect(workspace,refreshToken) {
         if (workspace != null) {
@@ -89,6 +90,10 @@ fun AdminMappingScreen(onBack: () -> Unit) {
     }
     if (recording) {
         PathRecordingScreen(requireNotNull(building).id,floorKey.trim(),null,onBack = { recording = false; loadedFloor = null; refreshToken++ })
+        return
+    }
+    if (managingPlaces && client != null && building != null && version != null) {
+        DraftPlaceManagementScreen(client,requireNotNull(building),requireNotNull(version).id,onBack = { managingPlaces = false; loadedFloor = null; refreshToken++ })
         return
     }
     if (reviewing && client != null && building != null && version != null) {
@@ -119,12 +124,11 @@ fun AdminMappingScreen(onBack: () -> Unit) {
             if (version != null) {
                 HorizontalDivider()
                 Text("${building?.name} · draft ${version?.versionNo}",style = MaterialTheme.typography.titleMedium)
-                if (floors.isEmpty()) Text("Publication blocked: no imported floors yet. Enter floor details, record a walk, submit it, then import the recording below. An empty map cannot be published.")
-                else Text("${floors.size} saved floors. Publication requires valid paths, an entrance, saved edits and review of every floor.")
+                if (floors.isEmpty()) Text("Publication blocked: no imported floors yet. Record, submit and import a route first.")
+                else Text("${floors.size} saved floors. Manage destinations, then review saved geometry and every floor before publication.")
+                OutlinedButton(enabled = !busy && floors.isNotEmpty(),onClick = { managingPlaces = true }) { Text("Manage rooms and shops") }
                 OutlinedButton(enabled = !busy,onClick = { reviewing = true }) { Text("Open draft review / publication checklist") }
-                floors.forEach { floor -> TextButton(enabled = !busy,onClick = {
-                    floorKey = floor.floorKey; floorName = floor.name; floorNumber = floor.floorNumber.toString(); loadedFloor = null
-                }) { Text(floor.name) } }
+                floors.forEach { floor -> TextButton(enabled = !busy,onClick = { floorKey = floor.floorKey; floorName = floor.name; floorNumber = floor.floorNumber.toString(); loadedFloor = null }) { Text(floor.name) } }
                 OutlinedTextField(floorKey,{ floorKey = it; loadedFloor = null },label = { Text("Floor ID") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(floorName,{ floorName = it },label = { Text("Floor name") },enabled = !busy,modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(floorNumber,{ floorNumber = it },label = { Text("Floor number") },enabled = !busy,modifier = Modifier.fillMaxWidth())
@@ -139,10 +143,11 @@ fun AdminMappingScreen(onBack: () -> Unit) {
                         WorkspaceNodePicker("Optional end join: only if physically reached",nodes,end) { end = it }
                     } else Text("First route: its start and Forward direction define the floor's local frame.")
                     Text("Submitted recordings awaiting import",style = MaterialTheme.typography.titleMedium)
+                    Text("Import requires the place-aware backend migrations 0011–0014. No legacy import fallback will discard destinations.",style = MaterialTheme.typography.bodySmall)
                     recordings.forEach { item -> OutlinedButton(enabled = !busy && floorName.isNotBlank() && floorNumber.toIntOrNull() != null && (nodes.isEmpty() || (start != null && facing != null && start != facing)),onClick = { perform {
                         workspace.importRecording(item.id,requireNotNull(version).id,floorName.trim(),floorNumber.toInt(),start,facing,end)
-                        refreshFloor(); status = "Trace imported. Open review and inspect every floor before publishing."
-                    } },modifier = Modifier.fillMaxWidth()) { Text("Import recording ${item.id.take(8)}") } }
+                        refreshFloor(); status = "Route and destinations imported. Review all floors before publishing."
+                    } },modifier = Modifier.fillMaxWidth()) { Text("Import route and places ${item.id.take(8)}") } }
                     if (recordings.isEmpty()) Text("No submitted recordings waiting on this floor. Stop and submit your recording before returning here.")
                 }
             }
@@ -154,13 +159,14 @@ private fun studioFailure(error: Exception): String {
     val causes = generateSequence<Throwable>(error) { it.cause }.take(8).toList()
     val detail = causes.joinToString(" ") { it.message.orEmpty() }.lowercase()
     return when {
-        "42501" in detail || "row-level security" in detail || "permission denied" in detail || "403" in detail -> "Server denied this operation. This is a permission failure, not a connection failure. Verify this account can edit the selected building; refresh before retrying."
-        "401" in detail || "jwt expired" in detail || "refresh token" in detail -> "Session expired or rejected. Switch / sign out, sign in again, then refresh the workspace."
-        causes.any { it is java.net.UnknownHostException } -> "Cannot resolve the server address. Check Wi-Fi or mobile data and DNS, then tap Refresh workspace."
-        causes.any { it is java.net.SocketTimeoutException } || "timeout" in detail -> "Server request timed out. Check your connection and refresh. A previous write may have succeeded; verify before repeating it."
-        causes.any { it is javax.net.ssl.SSLException } -> "Secure connection failed. Check device date/time and network interception; TLS verification remains enabled."
-        causes.any { it is java.io.IOException } -> "Network request failed. Restore the connection, then refresh to reconcile server state before retrying a write."
-        else -> "Workspace operation failed (${error.javaClass.simpleName}). Refresh to reconcile server state; check backend schema and application logs if it persists."
+        "pgrst202" in detail || "42883" in detail || "migrations" in detail -> "Required backend workflow is unavailable. Apply and verify migrations 0011–0014 before importing route places. No fallback import was attempted."
+        "42501" in detail || "row-level security" in detail || "permission denied" in detail || "403" in detail -> "Server denied this operation. Verify this account can edit the selected building; refresh before retrying."
+        "401" in detail || "jwt expired" in detail || "refresh token" in detail -> "Session expired or rejected. Sign in again, then refresh the workspace."
+        causes.any { it is java.net.UnknownHostException } -> "Cannot resolve the server address. Check your network and DNS, then refresh."
+        causes.any { it is java.net.SocketTimeoutException } || "timeout" in detail -> "Request timed out. Refresh and verify server state before repeating a write."
+        causes.any { it is javax.net.ssl.SSLException } -> "Secure connection failed. Check device time and network interception; TLS verification remains enabled."
+        causes.any { it is java.io.IOException } -> "Network request failed. Restore the connection, then refresh before retrying a write."
+        else -> "Workspace operation failed (${error.javaClass.simpleName}). Refresh to reconcile server state and check backend/application logs if it persists."
     }
 }
 
@@ -169,6 +175,6 @@ private fun WorkspaceNodePicker(label: String,nodes: List<MappingNode>,selected:
     Text(label,style = MaterialTheme.typography.labelLarge)
     Row(Modifier.horizontalScroll(rememberScrollState()),horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         FilterChip(selected = selected == null,onClick = { choose(null) },label = { Text("None") })
-        nodes.forEach { node -> FilterChip(selected = selected == node.nodeKey,onClick = { choose(node.nodeKey) },label = { Text("${node.name} · ${node.nodeKey.takeLast(8)}") }) }
+        nodes.forEach { node -> FilterChip(selected = selected == node.nodeKey,onClick = { choose(node.nodeKey) },label = { Text("${node.mappedPlaces.firstOrNull()?.name ?: node.name} · ${node.nodeKey.takeLast(8)}") }) }
     }
 }
