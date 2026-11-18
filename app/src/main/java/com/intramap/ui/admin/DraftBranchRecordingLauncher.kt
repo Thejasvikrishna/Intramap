@@ -108,13 +108,28 @@ fun DraftBranchRecordingLauncher(client: SupabaseClient,owner: MappingBuilding,v
                     FilterChip(selected = !chooseFacing,enabled = enabled && !busy,onClick = { chooseFacing = false },label = { Text("1. Start point") })
                     FilterChip(selected = chooseFacing,enabled = enabled && !busy,onClick = { chooseFacing = true },label = { Text("2. Facing point") })
                 }
-                InteractiveIndoorMap(building,floorKey,emptyList(),if (chooseFacing) facing else start,start,null,emptySet(),false,reload,0f,0f,
-                    onGesture = {},onPlace = { node ->
+                InteractiveIndoorMap(
+                    building = building,
+                    floorId = floorKey,
+                    route = emptyList(),
+                    destinationId = if (chooseFacing) facing else start,
+                    position = null,
+                    spreadM = null,
+                    blocked = emptySet(),
+                    follow = false,
+                    recenterToken = reload,
+                    topInsetPx = 0f,
+                    bottomInsetPx = 0f,
+                    onGesture = {},
+                    onPlace = { node ->
                         if (enabled && !busy && node.floorId == floorKey && floorNodes.any { it.nodeKey == node.nodeId }) {
                             if (chooseFacing) facing = node.nodeId
                             else { start = node.nodeId; if (facing == start) facing = null }
                         }
-                    },modifier = Modifier.fillMaxWidth().height(220.dp),showJunctions = true)
+                    },
+                    modifier = Modifier.fillMaxWidth().height(220.dp),
+                    showJunctions = true
+                )
                 Text("Start: ${a?.let { "${it.name} · ${it.nodeKey.takeLast(8)}" } ?: "Tap a saved point"}",style = MaterialTheme.typography.labelSmall)
                 Text("Facing: ${b?.let { "${it.name} · ${it.nodeKey.takeLast(8)}" } ?: "Choose a different saved point"}",style = MaterialTheme.typography.labelSmall)
                 if (problem != null) Text(problem,style = MaterialTheme.typography.bodySmall,color = if (start != null && facing != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
