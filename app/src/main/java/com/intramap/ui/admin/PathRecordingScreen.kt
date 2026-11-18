@@ -3,6 +3,7 @@ package com.intramap.ui.admin
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -74,6 +75,7 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
     var saveError by remember { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
+    var submissionFeedback by remember { mutableStateOf(false) }
     var running by remember { mutableStateOf(false) }
     var submitted by remember { mutableStateOf(false) }
     var uploadAttempted by remember { mutableStateOf(false) }
@@ -130,6 +132,7 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
     fun interrupt(message: String) {
         if (recordingId == null || submitted) return
         running = false
+        if (busy) { persist(); return }
         if (cameraMode && points.size <= 1 && !uploadAttempted && !saveError) {
             reviewing = false; cameraEpoch++; status = "Camera setup interrupted before movement. Open the camera again."
         } else { reviewing = true; status = message }
@@ -146,6 +149,13 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
         if (recordingId != null || loadError) { reviewing = true; leave = true } else onBack()
     }
     BackHandler { back() }
+    if (submissionFeedback) AlertDialog(onDismissRequest = { if (!busy) submissionFeedback = false },
+        title = { Text(if (busy) "Submitting route and places" else if (submitted) "Submission saved on server" else "Submission needs attention") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(status)
+            Text("${points.size} route points · ${places?.places?.size ?: 0} places",style = MaterialTheme.typography.labelSmall)
+        } },confirmButton = { TextButton(enabled = !busy,onClick = { submissionFeedback = false }) { Text("Close") } })
     if (leave) AlertDialog(onDismissRequest = { leave = false },title = { Text("Save and leave?") },
         text = { Text("Route geometry and independent places are checkpointed locally. Upload and import are separate steps.") },
         confirmButton = { TextButton(enabled = !busy,onClick = {
@@ -235,7 +245,7 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
                         Text("Review the route and its places. Import and map review remain required before publication.",style = MaterialTheme.typography.bodyMedium)
                         val currentPlaces = places
                         if (currentPlaces != null) {
-                            Text("Selected route point ${(selectedSample.coerceIn(0,points.lastIndex) + 1)} / ${points.size}",style = MaterialTheme.typography.labelLarge)
+                            Text("Selected route point ${(selectedSample.coerceIn(0,points.lastIndex) + 1)} / ${points.size} · tap the path to select",style = MaterialTheme.typography.labelLarge)
                             if (points.size > 1) Slider(value = selectedSample.coerceIn(0,points.lastIndex).toFloat(),onValueChange = { selectedSample = it.roundToInt().coerceIn(0,points.lastIndex) },valueRange = 0f..points.lastIndex.toFloat(),enabled = !busy && !uploadAttempted && !saveError)
                             RoutePlaceEditor(currentPlaces,selectedSample.coerceIn(0,points.lastIndex),enabled = !busy && !saveError && !uploadAttempted,onChange = { updated ->
                                 if (!busy && !saveError && !uploadAttempted) { places = updated; checkpointFormat = 2; persist(); status = "Place changes queued for local checkpointing." }
@@ -247,22 +257,27 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
                         Text("Submission includes all independent places and requires backend migrations 0011–0014. Support is checked before a new upload is frozen.",style = MaterialTheme.typography.bodySmall)
                         if (points.size <= 1) Text("Walk a route before submitting; a starting point is not a path.",style = MaterialTheme.typography.bodySmall)
                         Button(enabled = !busy && !saveError && points.size > 1,onClick = {
-                            busy = true
+                            busy = true; status = "Checking server support before uploading…"; submissionFeedback = true
                             scope.launch {
                                 try {
                                     submitter.requireBackend()
                                     uploadAttempted = true; places = places?.freeze()
+                                    status = "Saving the frozen route and places on this device…"
                                     val receipt = requireNotNull(persist())
                                     val frozen = currentSnapshot()
                                     receipt.await()
                                     status = "Uploading frozen route and places…"
                                     submitter.uploadFrozenRecording(frozen)
-                                    submitted = true; persist()?.await()
-                                    status = "Route and places submitted. Return to the studio to import and review them."
+                                    submitted = true; status = "Server accepted the route and places. Saving the receipt…"; persist()?.await()
+                                    status = "Route and places submitted. Return to the studio, load this floor and import the recording. Publication still requires draft review."
                                 } catch (e: CancellationException) { throw e }
-                                catch (_: Exception) {
+                                catch (e: Exception) {
+                                    val details = generateSequence<Throwable>(e) { it.cause }.take(8).joinToString(" ") { it.message.orEmpty() }.lowercase()
                                     status = when {
                                         submitted -> "Server submission succeeded. Retry local save for its receipt."
+                                        "pgrst202" in details || "42883" in details -> "Required server function is missing. Apply and verify backend migrations 0011–0014, then retry. No legacy upload was attempted. Your local route and places are retained."
+                                        "42501" in details || "permission denied" in details || "row-level security" in details -> "Server denied submission. Check the recording owner's sign-in and building permissions. Local route and places are retained."
+                                        "401" in details || "jwt expired" in details -> "Sign-in expired or was rejected. Sign in again to the same account, then retry this saved recording."
                                         !uploadAttempted -> "Upload not started. Check connection, sign-in and backend migrations 0011–0014. Place edits remain editable."
                                         else -> "Submission incomplete or unconfirmed. Route and places remain frozen locally; retry reconciles server state without dropping markers."
                                     }
@@ -279,13 +294,13 @@ private fun RecoverableRecorder(client: SupabaseClient,account: String,buildingI
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(when { submitted -> "Submitted route"; reviewing -> "Route and place review"; running -> "Recording movement"; recordingId != null -> "Ready for capture setup"; else -> "Live route preview" },style = MaterialTheme.typography.titleSmall)
             Text(if (cameraMode) "Relative camera trace · not a reconstructed floor plan" else "Sensor estimate · assumed 0.70 m stride",style = MaterialTheme.typography.bodySmall,color = MaterialTheme.colorScheme.onSurfaceVariant)
-            WalkingTracePreview(points,places?.places.orEmpty(),if (reviewing) selectedSample else null,Modifier.fillMaxWidth().weight(1f))
+            WalkingTracePreview(points,places?.places.orEmpty(),if (reviewing) selectedSample else null,Modifier.fillMaxWidth().weight(1f),onSelect = { if (reviewing && !busy) selectedSample = it })
         }
     }
 }
 
 @Composable
-private fun WalkingTracePreview(points: List<WalkingSample>,places: List<RecordedRoutePlace>,selectedSample: Int?,modifier: Modifier = Modifier) {
+private fun WalkingTracePreview(points: List<WalkingSample>,places: List<RecordedRoutePlace>,selectedSample: Int?,modifier: Modifier = Modifier,onSelect: (Int) -> Unit) {
     var zoom by remember { mutableFloatStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
     var follow by remember { mutableStateOf(true) }
@@ -295,22 +310,35 @@ private fun WalkingTracePreview(points: List<WalkingSample>,places: List<Recorde
     val route = MaterialTheme.colorScheme.primary
     val startColor = MaterialTheme.colorScheme.tertiary
     val markerColor = MaterialTheme.colorScheme.error
+    val select by rememberUpdatedState(onSelect)
+    fun projection(width: Float,height: Float,baseScale: Float): Pair<Float,(WalkingSample) -> Offset> {
+        val minX = points.minOfOrNull { it.x } ?: 0.0; val maxX = points.maxOfOrNull { it.x } ?: 0.0
+        val minY = points.minOfOrNull { it.y } ?: 0.0; val maxY = points.maxOfOrNull { it.y } ?: 0.0
+        val scale = (if (fit) min(width/(maxX-minX+6).toFloat(),height/(maxY-minY+6).toFloat()) else baseScale)*zoom
+        val cx = if (follow) points.lastOrNull()?.x ?: 0.0 else if (fit) (minX+maxX)/2 else 0.0
+        val cy = if (follow) points.lastOrNull()?.y ?: 0.0 else if (fit) (minY+maxY)/2 else 0.0
+        val offset = if (follow) Offset.Zero else pan
+        return scale to { p -> Offset(width/2+offset.x+((p.x-cx)*scale).toFloat(),height/2+offset.y+((p.y-cy)*scale).toFloat()) }
+    }
     Box(modifier) {
-        Canvas(Modifier.fillMaxSize().pointerInput(Unit) { detectTransformGestures { _,delta,factor,_ -> follow = false; zoom = (zoom*factor).coerceIn(0.25f,8f); pan += delta } }) {
+        Canvas(Modifier.fillMaxSize().pointerInput(Unit) { detectTransformGestures { _,delta,factor,_ -> follow = false; zoom = (zoom*factor).coerceIn(0.25f,8f); pan += delta } }
+            .pointerInput(points,zoom,pan,follow,fit,selectedSample != null) {
+                detectTapGestures { tap ->
+                    if (selectedSample != null && points.isNotEmpty() && size.width > 0 && size.height > 0) {
+                        val (_,position) = projection(size.width.toFloat(),size.height.toFloat(),24.dp.toPx())
+                        val index = points.indices.minByOrNull { (position(points[it])-tap).getDistanceSquared() }
+                        if (index != null && (position(points[index])-tap).getDistance() <= 24.dp.toPx()) select(index)
+                    }
+                }
+            }) {
             drawRect(background)
             if (size.minDimension <= 0) return@Canvas
-            val minX = points.minOfOrNull { it.x } ?: 0.0; val maxX = points.maxOfOrNull { it.x } ?: 0.0
-            val minY = points.minOfOrNull { it.y } ?: 0.0; val maxY = points.maxOfOrNull { it.y } ?: 0.0
-            val scale = (if (fit) min(size.width/(maxX-minX+6).toFloat(),size.height/(maxY-minY+6).toFloat()) else 24.dp.toPx())*zoom
-            val centerX = if (follow) points.lastOrNull()?.x ?: 0.0 else if (fit) (minX+maxX)/2 else 0.0
-            val centerY = if (follow) points.lastOrNull()?.y ?: 0.0 else if (fit) (minY+maxY)/2 else 0.0
-            val offset = if (follow) Offset.Zero else pan
-            fun position(p: WalkingSample) = Offset(size.width/2+offset.x+((p.x-centerX)*scale).toFloat(),size.height/2+offset.y+((p.y-centerY)*scale).toFloat())
+            val (scale,position) = projection(size.width,size.height,24.dp.toPx())
             val spacing = ((if (scale < 12.dp.toPx()) 5 else 1)*scale)
-            val ox = size.width/2+offset.x-(centerX*scale).toFloat(); val oy = size.height/2+offset.y-(centerY*scale).toFloat()
-            var gx = ((ox%spacing)+spacing)%spacing
+            val origin = position(WalkingSample(0.0,0.0,0L,0.0,null))
+            var gx = ((origin.x%spacing)+spacing)%spacing
             while (gx < size.width) { drawLine(grid,Offset(gx,0f),Offset(gx,size.height),1f); gx += spacing }
-            var gy = ((oy%spacing)+spacing)%spacing
+            var gy = ((origin.y%spacing)+spacing)%spacing
             while (gy < size.height) { drawLine(grid,Offset(0f,gy),Offset(size.width,gy),1f); gy += spacing }
             points.zipWithNext().forEach { (a,b) -> drawLine(route,position(a),position(b),4.dp.toPx(),StrokeCap.Round) }
             points.firstOrNull()?.let { drawCircle(startColor,7.dp.toPx(),position(it)) }
@@ -320,7 +348,7 @@ private fun WalkingTracePreview(points: List<WalkingSample>,places: List<Recorde
             points.lastOrNull()?.let { drawCircle(route.copy(alpha = 0.15f),16.dp.toPx(),position(it)); drawCircle(background,10.dp.toPx(),position(it)); drawCircle(route,7.dp.toPx(),position(it)) }
         }
         Surface(Modifier.align(Alignment.TopStart).padding(8.dp),shape = MaterialTheme.shapes.small,tonalElevation = 2.dp) {
-            Text(if (points.size <= 1) "Start capture, then walk to draw your path" else "${places.size} places · select recorded points in review",Modifier.padding(8.dp),style = MaterialTheme.typography.labelSmall)
+            Text(if (points.size <= 1) "Start capture, then walk to draw your path" else if (selectedSample != null) "Tap the path · selected point ${selectedSample+1}" else "${places.size} places · stop to review",Modifier.padding(8.dp),style = MaterialTheme.typography.labelSmall)
         }
         Row(Modifier.align(Alignment.BottomEnd).padding(8.dp),horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             FilledTonalButton(onClick = { follow = false; fit = true; zoom = 1f; pan = Offset.Zero }) { Text("Fit route") }
