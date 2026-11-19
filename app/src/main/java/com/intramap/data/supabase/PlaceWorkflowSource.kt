@@ -13,7 +13,8 @@ data class PlaceWorkflowCapabilities(
 }
 class PlaceWorkflowSource(private val client: SupabaseClient) {
     suspend fun requireInstalled() {
-        val capabilities = client.postgrest.rpc("place_workflow_capabilities").decodeSingle<PlaceWorkflowCapabilities>()
+        // This scalar jsonb RPC returns an object, not a row array.
+        val capabilities = client.postgrest.rpc("place_workflow_capabilities").decodeAs<PlaceWorkflowCapabilities>()
         check(capabilities.supported) { "Install and verify place workflow migrations 0011 through 0014" }
     }
 }
